@@ -8,7 +8,7 @@
 #include "jpwl_types.h"
 #include <stdint.h>
 
-//#define RS_OPTIMIZED
+#define RS_OPTIMIZED
 
 #define ESD_PACKETS _true_		/**< пакетный режим данных о чувствительности */
 #define ESD_BYTE_RANGE _false_	/**< режим байтового диапазона данных о чувствительности */

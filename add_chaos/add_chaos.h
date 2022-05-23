@@ -1,20 +1,6 @@
 ﻿#pragma once 
-/** 
- * \file add_haos_import.h
- * \brief Файл описания программного интерфейса библиотеки искусственного зашумления кодового потока.
- * \author Скороход С.В.
- * \date Дата последней модификации - 28.02.13 
-*/
-
 #include <stdint.h>
 #include "chaos_params.h"
-
-#ifndef __cplusplus
-__declspec(dllimport)
-#else
-extern "C" __declspec(dllimport)
-#endif
-void chaos_set_default_params(chaos_params_t* params);
 
 /* 
  * brief Установка по умолчанию значений параметров библиотеки на стороне передатчика
@@ -25,7 +11,7 @@ __declspec(dllimport)
 #else
 extern "C" __declspec(dllimport) 
 #endif
-void chaos_init(chaos_params_t* params);
+void chaos_init();
 
 /* 
  * brief Вызов действий библиотеки по зашумлению RTP-пакетов в реальном масштабе времени
@@ -46,11 +32,11 @@ __declspec(dllimport)
 #else
 extern "C" __declspec(dllimport)
 #endif
-size_t read_packets_with_deinterleave(uint8_t* out_buf, uint16_t count);
+size_t read_packets_with_deinterleave(uint8_t* out_buf, size_t count, size_t stripe);
 
 #ifndef __cplusplus
 __declspec(dllimport)
 #else
 extern "C" __declspec(dllimport)
 #endif
-size_t write_packets_with_interleave(uint8_t* inp_buf, size_t length);
+size_t write_packets_with_interleave(uint8_t* inp_buf, size_t length, size_t stripe);

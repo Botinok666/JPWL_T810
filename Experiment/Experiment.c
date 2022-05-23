@@ -1,7 +1,3 @@
-// Expiriment.cpp : Defines the entry point for the console application.
-//
-
-#include "stdafx.h"
 #include "windows.h"
 #include "winbase.h"
 #include "math.h"
@@ -25,6 +21,7 @@ typedef struct {
 } quality_factors;
 
 int const BUFFER_SIZE = 1ULL << 25; // 32Mb
+uint8_t const used_jpwl[] = { 38, 43, 48, 56, 64, 75, 85, 96, 112, 128 };
 wchar_t const* test_tile_xy = L"test_tile_xy.tsv";
 wchar_t const* test_err_perc = L"test_error_perc.tsv";
 wchar_t const* in_files[] = { 
@@ -44,6 +41,13 @@ static void warning_callback(const char* msg, void* client_data)
 {
 	(void)client_data;
 	fprintf(stdout, "[WARNING] %s", msg);
+}
+
+void get_bmp_info(uint8_t* bmp, opj_bmp_info_t* info) {
+	opj_bmp_header_t orig_header;
+	if (bmp_read_file_header(&bmp, &orig_header))
+		return;
+	bmp_read_info_header(&bmp, info);
 }
 
 errno_t calculate_qf(uint8_t* original_bmp, uint8_t* decoded_bmp, quality_factors* qf_result) {
@@ -243,6 +247,13 @@ void print_stats(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq, siz
 	wprintf(L"time %.3f s, speed %zd Kb/s\n", msecs / 1000.0f, ((size >> 10) * 1000) / msecs);
 }
 
+float get_secs(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq) {
+	LARGE_INTEGER elapsed = {
+		.QuadPart = (end.QuadPart - start.QuadPart) * 1000 / freq.QuadPart
+	};
+	return elapsed.LowPart * .001f;
+}
+
 void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
 	uint8_t* bmp = NULL;
 	size_t bmp_size = 0;
@@ -294,10 +305,8 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 		.pData = (uint8_t*)malloc(BUFFER_SIZE)
 	};
 
-	chaos_params_t chaos_params;
-	chaos_set_default_params(&chaos_params);
-	chaos_params.err_probability = .12f;
-	chaos_init(&chaos_params);
+	chaos_init();
+	float err_probability = .12f;
 
 	do {
 		int tile_x, tile_y;
@@ -335,10 +344,12 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 		wprintf(L"J2K to %.2f Mb JPWL: ", enc_bResults.wcoder_out_len / 1048576.0f);
 		print_stats(StartingTime, EndingTime, Frequency, in_stream->offset);
 
-		if (chaos_params.err_probability > 0) {
-			size_t packets = write_packets_with_interleave(jpwl_stream.pData, enc_bResults.wcoder_out_len);
-			size_t errors = create_packet_errors(packets, chaos_params.err_probability);
-			size_t read_bytes = read_packets_with_deinterleave(jpwl_stream.pData, (uint16_t)packets);
+		if (err_probability > 0) {
+			size_t packets = write_packets_with_interleave(
+				jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+			size_t errors = create_packet_errors(packets, err_probability);
+			size_t read_bytes = read_packets_with_deinterleave(
+				jpwl_stream.pData, packets, enc_params.wcoder_data);
 			enc_bResults.wcoder_out_len = (uint32_t)read_bytes;
 			wprintf(L"Tampered buffer with ~%.1f%% packet errors\n",
 				errors * 100.0f / enc_bResults.wcoder_out_len);
@@ -389,7 +400,7 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 		wprintf(L"Comparison result: MSE = %.2f, PSNR = %.2fdB\n", qf.MSE, qf.PSNR);
 
 		swprintf(out_name, 64, L"%s_%dx%d_%dp.bmp",
-			bmp_name, tile_x, tile_y, (uint32_t)(chaos_params.err_probability * 100));
+			bmp_name, tile_x, tile_y, (uint32_t)(err_probability * 100));
 		save_BMP_to_file(out_name, out_stream->pData, out_stream->offset);
 		if (err) {
 			wprintf(L"Something went wrong while writing bmp: code %d\n", err);
@@ -405,7 +416,153 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 	fclose(test_data);
 }
 
-int _tmain(int argc, wchar_t* argv[])
+void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+	uint8_t* bmp = NULL;
+	size_t bmp_size = 0;
+	wchar_t in_name[64];
+	swprintf(in_name, 64, L"%s.bmp", bmp_name);
+	errno_t err = read_BMP_from_file(in_name, &bmp, &bmp_size);
+	if (!bmp || err) {
+		wprintf(L"Something went wrong while reading bmp: code %d\n", err);
+		return;
+	}
+
+	FILE* test_data;
+	if (_wfopen_s(&test_data, L"test_error_recovery.tsv", L"wt, ccs=UTF-8"))
+		return;
+	uint8_t* pack_sens = (uint8_t*)malloc(MAX_EPBSIZE);
+	uint16_t* tile_packets = (uint16_t*)malloc(MAX_TILES);
+	LARGE_INTEGER StartingTime, EndingTime, Frequency;
+	if (!pack_sens || !tile_packets || !test_data)
+		return;
+
+	opj_set_default_encoder_parameters(&parameters);
+	parameters.decod_format = BMP_DFMT;
+	parameters.tcp_numlayers = 1;
+	parameters.tcp_rates[0] = 5;
+	parameters.cp_disto_alloc = 1;
+	parameters.irreversible = 1;
+	parameters.tile_size_on = 1;
+
+	if (jpwl_init())
+	{
+		wprintf(L"JPWL init failed");
+		return;
+	}
+	jpwl_enc_bResults enc_bResults;
+	jpwl_enc_params enc_params;
+	jpwl_enc_set_default_params(&enc_params);
+	enc_params.wcoder_mh = 1;
+	enc_params.wcoder_th = 1;
+
+	jpwl_dec_bResults dec_bResults;
+	jpwl_dec_init();
+
+	opj_memory_stream jpwl_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+	opj_memory_stream jpwl_copy_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+
+	int tiles_x = 10, tiles_y = 10;
+	QueryPerformanceFrequency(&Frequency);
+	QueryPerformanceCounter(&StartingTime);
+	err = encode_BMP_to_J2K(bmp, in_stream, &parameters, tiles_x, tiles_y);
+	if (err) {
+		wprintf(L"Something went wrong while encoding to J2K code %d\n", err);
+		return;
+	}
+	QueryPerformanceCounter(&EndingTime);
+	opj_bmp_info_t bmp_info;
+	get_bmp_info(bmp, &bmp_info);
+	fwprintf(test_data, L"%s.j2k %dx%d %zd %.2fs\n", bmp_name, bmp_info.biWidth, bmp_info.biHeight,
+		in_stream->offset, get_secs(StartingTime, EndingTime, Frequency));
+
+	sens_create(in_stream->pData, tile_packets, pack_sens);
+	jpwl_enc_bParams enc_bParams = {
+		.stream_len = (uint32_t)in_stream->offset,
+		.tile_packets = tile_packets,
+		.pack_sens = pack_sens
+	};
+
+	chaos_init();
+	float err_probability = .0f;
+	fwprintf(test_data, L"RS code\tBuffer errors\tRecovered tiles\tTime\n");
+
+	for (int i = 0; i < sizeof(used_jpwl); i++) {
+		enc_params.wcoder_data = used_jpwl[i]; // protection
+		enc_params.wcoder_mh = 1;
+		enc_params.wcoder_th = 1;
+		jpwl_enc_init(&enc_params);
+
+		in_stream->offset = 0;
+		if (jpwl_enc_run(in_stream->pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
+			continue;
+		}
+
+		while (err_probability < .5f) {
+			jpwl_dec_bParams dec_bParams = {
+				.inp_buffer = jpwl_copy_stream.pData,
+				.inp_length = enc_bResults.wcoder_out_len,
+				.out_buffer = out_stream->pData
+			};
+			int iterations = 8;
+			int recovered_tiles = 0;
+			float errors = 0;
+			QueryPerformanceFrequency(&Frequency);
+			QueryPerformanceCounter(&StartingTime);
+			for (int j = 0; j < iterations; j++) {
+				size_t packets = write_packets_with_interleave(
+					jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+				errors += create_packet_errors(packets, err_probability) * 100.0f / enc_bResults.wcoder_out_len;
+				(void)read_packets_with_deinterleave(
+					jpwl_copy_stream.pData, packets, enc_params.wcoder_data);
+				// Restore main header - we assume that it will be intact
+				memcpy(jpwl_copy_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+				if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
+					wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
+					continue;
+				}
+				recovered_tiles += dec_bResults.tile_all_rest_cnt;
+				jpwl_stream.offset = 0;
+				jpwl_copy_stream.offset = 0;
+				out_stream->offset = 0;
+			}
+			QueryPerformanceCounter(&EndingTime);
+			errors /= iterations;
+			recovered_tiles /= iterations;
+			fwprintf(test_data, L"%d\t%.1f\t%d\t%.3f\n", enc_params.wcoder_data, errors, recovered_tiles,
+				get_secs(StartingTime, EndingTime, Frequency) / iterations);
+
+			if (recovered_tiles > (tiles_x * tiles_y) * 9 / 10) {
+				err_probability += .005f;
+			}
+			else {
+				err_probability -= .03f;
+				if (err_probability < 0)
+					err_probability = 0;
+				break;
+			}
+		}
+		wprintf(L"Tested with jpwl %d\n", enc_params.wcoder_data);
+	};
+
+	jpwl_destroy();
+	free(pack_sens);
+	free(jpwl_stream.pData);
+	free(jpwl_copy_stream.pData);
+	free(tile_packets);
+	fflush(test_data);
+	fclose(test_data);
+}
+
+int main(int argc, wchar_t* argv[])
 {
 	wprintf(L"hello\n");
 
@@ -419,117 +576,28 @@ int _tmain(int argc, wchar_t* argv[])
 		.offset = 0,
 		.pData = (uint8_t*)malloc(BUFFER_SIZE)
 	};
-	test_tile_count(in_files[5], &in_stream, &out_stream);
+	int opt;
+	wprintf(L"Select test\n");
+	wprintf(L"1 - single image full cycle\n");
+	wprintf(L"2 - error resilience\n");
+	wscanf_s(L"%d", &opt);
+	switch (opt)
+	{
+	case 1:
+		test_tile_count(in_files[5], &in_stream, &out_stream);
+		break;
+
+	case 2:
+		test_error_recovery(in_files[6], &in_stream, &out_stream);
+		break;
+
+	default:
+		break;
+	}
+
 
 	free(in_stream.pData);
 	free(out_stream.pData);
 
 	return 0;
 }
-
-//BYTE *pSrcStream;				// буфер для исходного изображения
-//BYTE *pCodeStream;				// буфер для кодового потока jpeg2000 часть1
-//unsigned char out_b[MAX_OUTBUUFER_LN]; // буфер для кодового потока jpwl
-//unsigned char out_p[MAX_OUTBUUFER_LN*2]; // буфер для rtp пакетов
-//unsigned short tiles_b[MAX_TILES];		// буфер для данных о кол-ве пакетов по тайлам
-//unsigned short p_lengthes[MAX_ALLPACCKETS];		// массив длин сфомированных пакетов
-//unsigned char packsens_b[MAX_ALLPACCKETS]; // буфер для данных о чувствительности пакетов
-//jpwl_encoder_BufferParams e_par;	// параметры кодера
-//jpwl_encoder_BufferResults e_res;	// результаты кодера
-	//int i, j, protact_val, amm_val, tile_ct, percent;
-	//unsigned long l;
-	//w_encoder_params_value p_val;	// Структура с параметрами кодера jpwl
-	//FILE* f, * f_par, * f_kpack, * f_plen, * f_buf;
-	//unsigned char* c;
-	//jpwl_encoder_params j_e_p;
-	//unsigned char* outbuf, * in_b;
-	//int nBMPSize, nCodeSize;
-	//BOOL bLossy;
-
-//// инициализация кодера j2k
-//// 1 - с потерями, 0 - без потерь
-//	bLossy=1;
-//	nCodeSize = CodeJ2K(pSrcStream, pCodeStream, &j2kresults, bLossy);
-//// создание данных о чувствительности
-//	in_b=(unsigned char *)pCodeStream;
-//	sens_create(in_b,tiles_b,packsens_b);
-////	ibuf_write();
-////	printf("inbuf writed\n");
-////	sens_create();
-////	printf("Sens intervals created\n");
-//// устанавливаем параметры кодера
-////	set_encoder_params();
-//	e_par.pack_sens_val=packsens_b;
-//	e_par.tile_packets_val=tiles_b;
-//	e_par.stream_len=nCodeSize;
-///*	p_val.wcoder_mh_param_value=1;	// Стандартная защита основного заголовка
-//	p_val.wcoder_th_param_value=1;	// Стандартная защита  заголовка тайла
-//	p_val.wcoder_data_param_value=37;
-//	p_val.esd_use_value=_false_;
-//	p_val.esd_mode_value=ESD_PACKETS;
-//	p_val.inbuf_value=in_b;
-//	p_val.outbuf_value=out_b;
-////	p_val.tile_packets_value=tiles_b;
-////	p_val.pack_sens_value=packsens_b;
-//	p_val.interleave_use_value=_false_;	// Avvtndment не используется
-//	p_val.jpwl_encoder_mode_value=1;
-//	p_val.jpwl_encoder_dump_value=0;
-//	p_val.dump_dir=NULL; */
-//	if((f_par=fopen("Params.txt","rt"))==NULL) {
-//		printf("File Params.txt not found");
-//		return;
-//	};
-//	f_kpack=fopen("Kpack.txt","wt");
-//	f_plen=fopen("Plen.txt","wt");
-//	f_buf=fopen("Buf.dat","wb");
-//	fscanf(f_par,"%d\n", &tile_ct);
-//	fprintf(f_kpack,"%d\n",tile_ct);
-//	do {
-//		fscanf(f_par,"%d %d %d\n", &protact_val, &amm_val, &percent); 
-//		j_e_p.esd_use_val=0;
-//		j_e_p.interleave_use_val=(unsigned char)amm_val;
-//		j_e_p.jpwl_encoder_dump_val=0;
-//		j_e_p.jpwl_encoder_mode_val=1;
-//		j_e_p.wcoder_data_param_val=(unsigned char)protact_val;
-//		j_e_p.wcoder_mh_param_val=1;
-//		j_e_p.wcoder_th_param_val=1;
-//		if (!Init_jpwl_encoder(&j_e_p)) {
-//			printf("Init_jpwl_encoder error\n");
-//			return 0;
-//		};
-//		c=ProcessBuffer_jpwl_encoder(in_b,out_b,&e_par,&e_res);
-//		printf("Encoder return code=%d\n",c);
-//		
-///*		outbuf=out_b;
-//		f=fopen("OutBuf_encoder.j2k","wb");
-//		if(f==NULL) {
-//			printf("File not created\n");
-//			return;
-//		};
-//		for(i=0; i<e_res.wcoder_outlen; i++)
-//			fputc(*outbuf++,f);
-//		fclose(f);	
-//		printf("Outfile created\n");
-//		getchar();
-//*/	
-//		r_r_p_t.datagram_size_val=1024;
-//		r_r_p_t.Is_rtp_rfc_t=1;
-//		if (!rtp_rfc_init_t(&r_r_p_t)) {
-//			printf("rtp_rfc_init error\n");
-//			return 0;
-//		};
-//		in_params.instream_len_val=e_res.wcoder_outlen;
-//		in_params.instream_mhlen_val=e_res.wcoder_mhlen;
-//		in_params.interlace_mode_val=0;
-//		in_params.packet_lengthes_val=p_lengthes;
-//		in_params.ts_start_val=0;
-//		if (!ProcessBuffer_rtp_rfc_t(out_b,out_p,&in_params,&out_params)) {
-//			printf("ProcessBuffer_rtp_rfc_t error\n");
-//			return 0;
-//		};
-//		fprintf(f_kpack,"%d %d %d %d\n",protact_val, amm_val,out_params.packet_count_val,percent);
-//		for(i=0; i<out_params.packet_count_val; i++)
-//			fprintf(f_plen,"%d\n",p_lengthes[i]);
-//		
-//		printf("ProcessBuffer_rtp_rfc_t done\n");
-//

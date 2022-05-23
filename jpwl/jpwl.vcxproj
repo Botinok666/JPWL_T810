@@ -156,13 +156,13 @@ xcopy $(ProjectDir)rs64\RS64.lib $(OutDir) /Y /D</Command>
       <Optimization>MaxSpeed</Optimization>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;JPWL_ENCODER_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(OutDir)rs_crc_lib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(OutDir)rs_crc_lib.lib;$(OutDir)RS64.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
@@ -171,6 +171,10 @@ xcopy $(ProjectDir)rs64\RS64.lib $(OutDir) /Y /D</Command>
       <DataExecutionPrevention>
       </DataExecutionPrevention>
     </Link>
+    <PreBuildEvent>
+      <Command>xcopy $(ProjectDir)rs64\RS64.dll $(OutDir) /Y /D
+xcopy $(ProjectDir)rs64\RS64.lib $(OutDir) /Y /D</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="crc.c" />
