@@ -108,7 +108,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
-      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <CompileAs>CompileAsC</CompileAs>
@@ -183,7 +183,6 @@ xcopy $(ProjectDir)openjpeg\openjp2.lib $(OutDir) /Y /D</Command>
     <ClInclude Include="openjpeg\opj_stdint.h" />
     <ClInclude Include="memstream.h" />
     <ClInclude Include="opj_codec.h" />
-    <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jpwl\jpwl.vcxproj">

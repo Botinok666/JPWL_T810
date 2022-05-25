@@ -25,7 +25,7 @@ __declspec(dllimport)
 #else
 extern "C" __declspec(dllimport)
 #endif
-size_t create_packet_errors(size_t length, float probability);
+int create_packet_errors(int length, float probability, int burst_length);
 
 #ifndef __cplusplus
 __declspec(dllimport)

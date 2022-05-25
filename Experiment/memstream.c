@@ -1,3 +1,4 @@
+#include <memory.h>
 #include "memstream.h"
 
 // These routines are added to use memory instead of a file for input and output.

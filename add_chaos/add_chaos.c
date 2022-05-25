@@ -37,14 +37,30 @@ void chaos_init()
  * \return errors count
  */
 __declspec(dllexport)
-size_t create_packet_errors(size_t length, float probability)
+int create_packet_errors(int length, float probability, int burst_length)
 {
-	size_t i, total_err = 0;
+	int i, total_err = 0;
 
-	for (i = 0; i < length; i++) {
-		if (probability > get_rand_float()) {
-			memset(&packets[i], 0xff, sizeof(rtp_packet_t));
-			total_err += PACKET_SIZE;
+	if (burst_length == 1) {
+		for (i = 0; i < length; i++) {
+			if (probability > get_rand_float()) {
+				memset(&packets[i], 0xff, sizeof(rtp_packet_t));
+				total_err += PACKET_SIZE;
+			}
+		}
+	}
+	else {
+		int error_target = (int)(length * probability);
+		int bursts = error_target / burst_length;
+		int burst_step = length / bursts;
+		for (i = 0; i < bursts; i++) {
+			int burst_start = (i + 1) * burst_step - (burst_step >> 1);
+			burst_start += (int)(burst_step * (get_rand_float() - .5f));
+			int burst_size = (int)(burst_length * (get_rand_float() + .5f));
+			if (burst_start + burst_size > length)
+				burst_size = length - burst_start;
+			memset(&packets[burst_start], 0xff, sizeof(rtp_packet_t) * burst_size);
+			total_err += burst_size * PACKET_SIZE;
 		}
 	}
 	return total_err;

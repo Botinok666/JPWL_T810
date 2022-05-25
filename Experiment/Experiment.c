@@ -15,6 +15,12 @@
 #include "format_defs.h"
 #include "memstream.h"
 
+#define WINDOW_SIZE 4
+#define MIN_TILES_PERC .9f
+#define ADAPTIVE_ITERATIONS 512
+#define ADAPTIVE_SIN_WIDTH 256
+#define MAX_ERRORS_PERC .2f
+
 typedef struct {
 	float MSE;		// Mean Square Error
 	float PSNR;		// Peak Signal/Noise Ratio
@@ -22,6 +28,8 @@ typedef struct {
 
 int const BUFFER_SIZE = 1ULL << 25; // 32Mb
 uint8_t const used_jpwl[] = { 38, 43, 48, 56, 64, 75, 85, 96, 112, 128 };
+uint8_t const test_jpwl[] = { 38, 43, 48, 56, 64, 75, 85, 96 };
+float const high_to_low[] = { .005f, .015f, .035f, .06f, .1f, .12f, .135f, .15f };
 wchar_t const* test_tile_xy = L"test_tile_xy.tsv";
 wchar_t const* test_err_perc = L"test_error_perc.tsv";
 wchar_t const* in_files[] = { 
@@ -345,11 +353,13 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 		print_stats(StartingTime, EndingTime, Frequency, in_stream->offset);
 
 		if (err_probability > 0) {
+			memcpy(out_stream->pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
 			size_t packets = write_packets_with_interleave(
 				jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-			size_t errors = create_packet_errors(packets, err_probability);
+			int errors = create_packet_errors((int)packets, err_probability, 1);
 			size_t read_bytes = read_packets_with_deinterleave(
 				jpwl_stream.pData, packets, enc_params.wcoder_data);
+			memcpy(jpwl_stream.pData, out_stream->pData, enc_bResults.wcoder_mh_len);
 			enc_bResults.wcoder_out_len = (uint32_t)read_bytes;
 			wprintf(L"Tampered buffer with ~%.1f%% packet errors\n",
 				errors * 100.0f / enc_bResults.wcoder_out_len);
@@ -496,8 +506,6 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 
 	for (int i = 0; i < sizeof(used_jpwl); i++) {
 		enc_params.wcoder_data = used_jpwl[i]; // protection
-		enc_params.wcoder_mh = 1;
-		enc_params.wcoder_th = 1;
 		jpwl_enc_init(&enc_params);
 
 		in_stream->offset = 0;
@@ -520,7 +528,7 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 			for (int j = 0; j < iterations; j++) {
 				size_t packets = write_packets_with_interleave(
 					jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-				errors += create_packet_errors(packets, err_probability) * 100.0f / enc_bResults.wcoder_out_len;
+				errors += create_packet_errors((int)packets, err_probability, 1) * 100.0f / enc_bResults.wcoder_out_len;
 				(void)read_packets_with_deinterleave(
 					jpwl_copy_stream.pData, packets, enc_params.wcoder_data);
 				// Restore main header - we assume that it will be intact
@@ -562,6 +570,166 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 	fclose(test_data);
 }
 
+void select_params_adaptive(float buffer_errors, float recovered_tiles, jpwl_enc_params* params) {
+	static float prev_rec_errors[WINDOW_SIZE] = { 0, 0, 0, 0 };
+	static float prev_rec_tiles[WINDOW_SIZE] = { 0, 0, 0, 0 };
+	static int prev_idx = 0;
+
+	int jpwl_idx = 0, jpwl_codes = sizeof(test_jpwl);
+	for (int i = 0; i < jpwl_codes; i++) {
+		if (test_jpwl[i] == params->wcoder_data) {
+			jpwl_idx = i;
+			break;
+		}
+	}
+	prev_rec_errors[prev_idx] = buffer_errors;
+	prev_rec_tiles[prev_idx] = recovered_tiles;
+	prev_idx++;
+	if (prev_idx >= WINDOW_SIZE) {
+		prev_idx = 0;
+
+		float avg_errors = 0, avg_tiles = 0;
+		for (int i = 0; i < WINDOW_SIZE; i++) {
+			avg_errors += prev_rec_errors[i];
+			avg_tiles += prev_rec_tiles[i];
+		}
+		avg_errors /= WINDOW_SIZE;
+		avg_tiles /= WINDOW_SIZE;
+
+		int step = 0;
+		if (avg_tiles < MIN_TILES_PERC) {
+			// step up in range 1..3
+			avg_tiles = (MIN_TILES_PERC - avg_tiles) * (2.0f / MIN_TILES_PERC);
+			step = (int)avg_tiles + 1;
+			if (jpwl_idx + step >= jpwl_codes) {
+				step = jpwl_codes - 1 - jpwl_idx;
+			}
+		}
+		else if (avg_tiles > .98f) {
+			if (jpwl_idx > 0 && high_to_low[jpwl_idx - 1] > avg_errors) {
+				step = -1;
+			}
+		}
+
+		params->wcoder_data = test_jpwl[jpwl_idx + step];
+	}
+}
+
+void test_adaptive_algorithm(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+	uint8_t* bmp = NULL;
+	size_t bmp_size = 0;
+	wchar_t in_name[64];
+	swprintf(in_name, 64, L"%s.bmp", bmp_name);
+	errno_t err = read_BMP_from_file(in_name, &bmp, &bmp_size);
+	if (!bmp || err) {
+		wprintf(L"Something went wrong while reading bmp: code %d\n", err);
+		return;
+	}
+
+	FILE* test_data;
+	if (_wfopen_s(&test_data, L"test_adaptive.tsv", L"wt, ccs=UTF-8"))
+		return;
+	uint8_t* pack_sens = (uint8_t*)malloc(MAX_EPBSIZE);
+	uint16_t* tile_packets = (uint16_t*)malloc(MAX_TILES);
+	opj_memory_stream jpwl_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+	if (!pack_sens || !tile_packets || !test_data || !jpwl_stream.pData)
+		return;
+
+	opj_set_default_encoder_parameters(&parameters);
+	parameters.decod_format = BMP_DFMT;
+	parameters.tcp_numlayers = 1;
+	parameters.tcp_rates[0] = 5;
+	parameters.cp_disto_alloc = 1;
+	parameters.irreversible = 1;
+	parameters.tile_size_on = 1;
+
+	if (jpwl_init())
+	{
+		wprintf(L"JPWL init failed");
+		return;
+	}
+	jpwl_enc_bResults enc_bResults;
+	jpwl_enc_params enc_params;
+	jpwl_enc_set_default_params(&enc_params);
+	enc_params.wcoder_data = test_jpwl[0];
+	enc_params.wcoder_mh = 1;
+	enc_params.wcoder_th = 1;
+
+	jpwl_dec_bResults dec_bResults;
+	jpwl_dec_init();
+
+	int tiles_x = 10, tiles_y = 10;
+	err = encode_BMP_to_J2K(bmp, in_stream, &parameters, tiles_x, tiles_y);
+	if (err) {
+		wprintf(L"Something went wrong while encoding to J2K code %d\n", err);
+		return;
+	}
+	opj_bmp_info_t bmp_info;
+	get_bmp_info(bmp, &bmp_info);
+	fwprintf(test_data, L"%s.j2k %dx%d %zd\n", bmp_name, bmp_info.biWidth, bmp_info.biHeight, in_stream->offset);
+
+	sens_create(in_stream->pData, tile_packets, pack_sens);
+	jpwl_enc_bParams enc_bParams = {
+		.stream_len = (uint32_t)in_stream->offset,
+		.tile_packets = tile_packets,
+		.pack_sens = pack_sens
+	};
+
+	chaos_init();
+	fwprintf(test_data, L"Iteration\tRS code\tBuffer errors\tRecovered tiles\n");
+
+	for (int i = 0; i < ADAPTIVE_ITERATIONS; i++) {
+		jpwl_stream.offset = 0;
+		out_stream->offset = 0;
+		in_stream->offset = 0;
+
+		jpwl_enc_init(&enc_params);
+		if (jpwl_enc_run(in_stream->pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
+			continue;
+		}
+
+		size_t packets = write_packets_with_interleave(
+			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+		memcpy(out_stream->pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+		// error function
+		float err_prob = (cosf((float)i / ADAPTIVE_SIN_WIDTH * 3.1415927f) + 1.0f) * .5f * MAX_ERRORS_PERC;
+		int errors = create_packet_errors((int)packets, err_prob, 1);
+		memcpy(jpwl_stream.pData, out_stream->pData, enc_bResults.wcoder_mh_len);
+		(void)read_packets_with_deinterleave(jpwl_stream.pData, packets, enc_params.wcoder_data);
+
+		jpwl_dec_bParams dec_bParams = {
+			.inp_buffer = jpwl_stream.pData,
+			.inp_length = enc_bResults.wcoder_out_len,
+			.out_buffer = out_stream->pData
+		};
+		if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
+			wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
+			continue;
+		}
+		float buffer_errors = (float)errors / enc_bResults.wcoder_out_len;
+		float recovered_tiles = (float)dec_bResults.tile_all_rest_cnt / (tiles_x * tiles_y);
+
+		fwprintf(test_data, L"%d\t%d\t%.3f\t%.2f\n", i, enc_params.wcoder_data, buffer_errors, recovered_tiles);
+		select_params_adaptive(buffer_errors, recovered_tiles, &enc_params);
+
+		if (!(i & 31)) {
+			wprintf(L"\rTest iteration %d completed", i);
+		}
+	};
+
+	jpwl_destroy();
+	free(pack_sens);
+	free(jpwl_stream.pData);
+	free(tile_packets);
+	fflush(test_data);
+	fclose(test_data);
+}
+
 int main(int argc, wchar_t* argv[])
 {
 	wprintf(L"hello\n");
@@ -580,6 +748,7 @@ int main(int argc, wchar_t* argv[])
 	wprintf(L"Select test\n");
 	wprintf(L"1 - single image full cycle\n");
 	wprintf(L"2 - error resilience\n");
+	wprintf(L"3 - adaptive test\n");
 	wscanf_s(L"%d", &opt);
 	switch (opt)
 	{
@@ -591,10 +760,13 @@ int main(int argc, wchar_t* argv[])
 		test_error_recovery(in_files[6], &in_stream, &out_stream);
 		break;
 
+	case 3:
+		test_adaptive_algorithm(in_files[6], &in_stream, &out_stream);
+		break;
+
 	default:
 		break;
 	}
-
 
 	free(in_stream.pData);
 	free(out_stream.pData);
