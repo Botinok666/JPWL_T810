@@ -1,11 +1,4 @@
 ﻿#pragma once 
-/** 
- * \file jpwl_encoder.h 
- * \brief Файл описания программного интерфейса кодера JPWL
- * \author Скороход С.В.
- * \date Дата последней модификации - 9.11.12 
-*/
-
 #include "jpwl_params.h"
 
 /**

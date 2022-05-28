@@ -65,6 +65,11 @@ void initialize_mersenne(unsigned long seed);
 
 unsigned long get_rand_uint();
 
+#ifndef __cplusplus
+__declspec(dllimport)
+#else
+extern "C" __declspec(dllimport)
+#endif
 float get_rand_float();
 
 double get_rand_double();

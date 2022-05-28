@@ -1,11 +1,4 @@
-﻿/**
- * \file add_haos.cpp
- * \brief Подпрограммы библиотеки искусственного зашумления кодового потока.
- * \author Скороход С.В.
- * \date Дата последней модификации - 28.02.12
-*/
-
-#include "stdlib.h"
+﻿#include "stdlib.h"
 #include "stdio.h"
 #include <memory.h>
 #include <stdint.h>

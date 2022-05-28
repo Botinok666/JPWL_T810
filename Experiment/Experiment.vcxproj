@@ -178,6 +178,7 @@ xcopy $(ProjectDir)openjpeg\openjp2.lib $(OutDir) /Y /D</Command>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="convert.h" />
+    <ClInclude Include="experiment.h" />
     <ClInclude Include="format_defs.h" />
     <ClInclude Include="openjpeg\openjpeg.h" />
     <ClInclude Include="openjpeg\opj_stdint.h" />

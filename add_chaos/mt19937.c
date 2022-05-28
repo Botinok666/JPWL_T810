@@ -56,10 +56,8 @@ void initialize_mersenne(unsigned long seed)
 unsigned long get_rand_uint()
 {
     unsigned long y;
-    unsigned long mag01[2];
+    unsigned long mag01[2] =  {0, MATRIX_A };
     mt19937_state_t* m = &mt19937_state;
-    mag01[0] = 0x0;
-    mag01[1] = MATRIX_A;
 
     /* mag01[x] = x * MATRIX_A  for x=0,1 */
 
@@ -93,6 +91,7 @@ unsigned long get_rand_uint()
     return y;
 }
 
+__declspec(dllexport)
 float get_rand_float()
 {
     mt19937_state_t* m = &mt19937_state;

@@ -123,7 +123,7 @@ uint32_t get_Pepb(uint8_t protection)
 		return 0x20002520;
 	else if (protection == 38)		// RS(38,32)
 		return 0x20002620;
-	else if (protection == 41)		// RS(40,32)
+	else if (protection == 40)		// RS(40,32)
 		return 0x20002820;
 	else if (protection == 43)		// RS(43,32)
 		return 0x20002B20;
@@ -141,7 +141,7 @@ uint32_t get_Pepb(uint8_t protection)
 		return 0x20004020;
 	else if (protection == 75)		// RS(75,32)
 		return 0x20004B20;
-	else if (protection == 81)		// RS(80,32)
+	else if (protection == 80)		// RS(80,32)
 		return 0x20005020;
 	else if (protection == 85)		// RS(85,32)
 		return 0x20005520;

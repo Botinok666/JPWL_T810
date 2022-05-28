@@ -1,10 +1,4 @@
-﻿/*
- * \file jpwl_decoder.cpp
- * \brief Файл библиотеки подпрограмм декодера JPWL
- * \author Скороход С.В.
- * \date Дата последней модификации - 9.11.12
-*/
-#include <memory.h>
+﻿#include <memory.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,16 +48,16 @@ uint16_t decode_Pepb(uint32_t* Pepb_value, uint8_t epb_type)
 	case 0xffffffff: return 0;	// нет защиты
 	case 0x00000000: 
 		if (epb_type == 0)	// предопределенная в первом EPB основного заголовка
-			return 160;
+			return 1;
 		else if (epb_type == 1)	// предопределенная в первом EPB заголовка тайла
-			return 80;
-		else					// предопределенная в непервом EPB заголовка
-			return 40;
+			return 2;
+		else					// предопределенная в не первом EPB заголовка
+			return 3;
 	case 0x00000010: return 16;			// crc-16
 	case 0x01000010: return 32;			// crc-32
 	case 0x20250020: return 37;			// RS(37,32)
 	case 0x20260020: return 38;			// RS(38,32)
-	case 0x20280020: return 41;			// RS(41,32)
+	case 0x20280020: return 40;			// RS(40,32)
 	case 0x202b0020: return 43;			// RS(43,32)
 	case 0x202d0020: return 45;			// RS(45,32)
 	case 0x20300020: return 48;			// RS(48,32)
@@ -72,7 +66,7 @@ uint16_t decode_Pepb(uint32_t* Pepb_value, uint8_t epb_type)
 	case 0x20380020: return 56;			// RS(56,32)
 	case 0x20400020: return 64;			// RS(64,32)
 	case 0x204b0020: return 75;			// RS(75,32)
-	case 0x20500020: return 81;			// RS(81,32)
+	case 0x20500020: return 80;			// RS(80,32)
 	case 0x20550020: return 85;			// RS(85,32)
 	case 0x20600020: return 96;			// RS(96,32)
 	case 0x20700020: return 112;		// RS(112,32)
@@ -130,15 +124,15 @@ uint32_t postEPB_correct(uint8_t* epb_start, uint8_t* postdata_start, uint32_t p
 			return 1;
 		return 0;
 	};
-	if (prot_mode == 160) {
+	if (prot_mode == 1) {
 		n_p = 160;
 		k_p = 64;
 	}
-	else if (prot_mode == 80) {
+	else if (prot_mode == 2) {
 		n_p = 80;
 		k_p = 25;
 	}
-	else if (prot_mode == 40) {	
+	else if (prot_mode == 3) {	
 		n_p = 40;
 		k_p = 13;
 	}
@@ -424,15 +418,15 @@ errno_t dec_mh_correct(addr_char* header)
 	e->pre_len = pre_l;			// длина пре-данных
 	e->post_len = prot_l - pre_l;	// длина пост-данных
 	// параметры защиты пост-данных
-	if (e->hprot == 160) {
+	if (e->hprot == 1) {
 		e->k_post = 64;
 		e->n_post = 160;
 	}
-	else if (e->hprot == 80) {
+	else if (e->hprot == 2) {
 		e->k_post = 25;
 		e->n_post = 80;
 	}
-	else if (e->hprot == 40) {
+	else if (e->hprot == 3) {
 		e->k_post = 13;
 		e->n_post = 40;
 	}
@@ -584,11 +578,11 @@ errno_t tile_preEPB_correct(uint8_t* tile, uint32_t* data_offset)
 		case 16:							// для crc нет параметров RS-кодов
 		case 32: 	e->n_post = e->k_post = 0;
 			break;
-		case 160:	e->n_post = 160; e->k_post = 64;	// параметры RS-кодов для пост-данных
+		case 1:	e->n_post = 160; e->k_post = 64;	// параметры RS-кодов для пост-данных
 			break;
-		case 80:	e->n_post = 80; e->k_post = 25;
+		case 2:	e->n_post = 80; e->k_post = 25;
 			break;
-		case 40:	e->n_post = 40; e->k_post = 13;
+		case 3:	e->n_post = 40; e->k_post = 13;
 			break;
 		default:	e->n_post = e->hprot; e->k_post = 32;
 		};
@@ -883,137 +877,3 @@ restore_stats* jpwl_dec_stats()
 {
 	return &stats;
 }
-
-#ifdef _TEST
-
-__declspec(dllexport) void markers_write()
-{
-	FILE* f;
-	int last_no;
-	unsigned long i;
-	epb_ms* e;
-	epc_ms* c;
-	esd_ms* s;
-
-	if (fopen_s(&f, "DecoderMarkerTable.txt", "wt, ccs=UTF-8"))
-		return;
-	for (i = 0, last_no = 0; i < markers_cnt; i++) {	// цикл по таблице маркеров
-		switch (dec_markers[i].id)
-		{
-		case EPB_MARKER: {
-			if (last_no != (dec_markers + i)->tile_num) {
-				last_no = (dec_markers + i)->tile_num;
-				if (last_no == -1)
-					fwprintf(f, L"\n\r======Основной заголовок======\n\r");
-				else
-					fwprintf(f, L"\n\r=======Тайл %d ===============\n\r", last_no);
-			};
-			fwprintf(f, L"\n\rid= %Xh ---------- EPB -------------\n", (dec_markers + i)->id);
-			/*			if((dec_markers+i)->len_ready==_true_)
-							fprintf(f,"len_ready=1 len=%d\n",(dec_markers+i)->len);
-						else
-							fprintf(f,"len_ready=0 len=%d\n",(dec_markers+i)->len);
-						if((dec_markers+i)->posin_ready==_true_)
-							fprintf(f,"posin_ready=1 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						else
-							fprintf(f,"posin_ready=0 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						if((dec_markers+i)->posout_ready==_true_)
-							fprintf(f,"posout_ready=1 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						else
-							fprintf(f,"posout_ready=0 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						if((dec_markers+i)->params_ready==_true_)
-							fprintf(f,"params_ready=1  ");
-						else
-							fprintf(f,"params_ready=0  ");
-						if((dec_markers+i)->data_ready==_true_)
-							fprintf(f,"data_ready=1\n");
-						else
-							fprintf(f,"data_ready=0\n");
-			*/
-			e = &(dec_markers + i)->m.epb;
-			//			if(e->latest==_true_) fprintf(f,"latest=1 ");
-			//			else fprintf(f,"latest=0 ");
-			//			if(e->packed==_true_) fprintf(f,"packet=1 \n");
-			//			else fprintf(f,"packet=0 \n");
-			fwprintf(f, L"tileno=%d index=%d hprot=%d\n", (dec_markers + i)->tile_num, e->index, e->hprot);
-			fwprintf(f, L"k_pre=%d n_pre=%d pre_len=%d\n", e->k_pre, e->n_pre, e->pre_len);
-			fwprintf(f, L"k_post=%d n_post=%d post_len=%d\n", e->k_post, e->n_post, e->post_len);
-			fwprintf(f, L"Lepb= %Xh \n", e->Lepb);
-			break;
-		};
-		case EPC_MARKER: {
-			fwprintf(f, L"\n\rid= %Xh -------------- EPC ----------------\n", (dec_markers + i)->id);
-			/*			if((dec_markers+i)->len_ready==_true_)
-							fprintf(f,"len_ready=1 len=%d\n",(dec_markers+i)->len);
-						else
-							fprintf(f,"len_ready=0 len=%d\n",(dec_markers+i)->len);
-						if((dec_markers+i)->posin_ready==_true_)
-							fprintf(f,"posin_ready=1 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						else
-							fprintf(f,"posin_ready=0 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						if((dec_markers+i)->posout_ready==_true_)
-							fprintf(f,"posout_ready=1 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						else
-							fprintf(f,"posout_ready=0 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						if((dec_markers+i)->params_ready==_true_)
-							fprintf(f,"params_ready=1  ");
-						else
-							fprintf(f,"params_ready=0  ");
-						if((dec_markers+i)->data_ready==_true_)
-							fprintf(f,"data_ready=1\n");
-						else
-							fprintf(f,"data_ready=0\n");
-			*/
-			c = &(dec_markers + i)->m.epc;
-			//			if(c->esd_on==_true_) fprintf(f,"esd_on=1  ");
-			//			else fprintf(f,"esd_on=0  ");
-			//			if(c->red_on==_true_) fprintf(f,"red_on=1  ");
-			//			else fprintf(f,"red_on=0  ");
-			//			if(c->epb_on==_true_) fprintf(f,"epb_on=1  ");
-			//			else fprintf(f,"epb_on=0  ");
-			//			if(c->info_on==_true_) fprintf(f,"info_on=1  \n");
-			//			else fprintf(f,"info_on=0  \n");
-			fwprintf(f, L"Lepc= %Xh (%d)  Pcrc= %Xh  DL= %Xh (%d)  Pepc= %Xh\n",
-				c->Lepc, c->Lepc, c->Pcrc, c->DL, c->DL, c->Pepc);
-			break;
-		};
-		case ESD_MARKER: {
-			fwprintf(f, L"\n\rid= %Xh -------------- ESD ----------------\n", (dec_markers + i)->id);
-			/*			if((dec_markers+i)->len_ready==_true_)
-							fprintf(f,"len_ready=1 len=%d\n",(dec_markers+i)->len);
-						else
-							fprintf(f,"len_ready=0 len=%d\n",(dec_markers+i)->len);
-						if((dec_markers+i)->posin_ready==_true_)
-							fprintf(f,"posin_ready=1 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						else
-							fprintf(f,"posin_ready=0 pos_in=%Xh\n",(dec_markers+i)->pos_in);
-						if((dec_markers+i)->posout_ready==_true_)
-							fprintf(f,"posout_ready=1 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						else
-							fprintf(f,"posout_ready=0 pos_out=%Xh\n",(dec_markers+i)->pos_out);
-						if((dec_markers+i)->params_ready==_true_)
-							fprintf(f,"params_ready=1  ");
-						else
-							fprintf(f,"params_ready=0  ");
-						if((dec_markers+i)->data_ready==_true_)
-							fprintf(f,"data_ready=1\n");
-						else
-							fprintf(f,"data_ready=0\n");
-			*/
-			s = &(dec_markers + i)->m.esd;
-			fwprintf(f, L"Lesd= %Xh (%d)  \n", s->Lesd, s->Lesd);
-			break;
-		};
-		case BAD_ID: {
-			fwprintf(f, L"\n\rid= %Xh -------------- BAD_BLOCK ----------------\n", (dec_markers + i)->id);
-			fwprintf(f, L"Lbad=%d \\n", (dec_markers + i)->m.bad.Lbad);
-			break;
-		};
-		};
-		fwprintf(f, L"len=%d (%Xh)  posin=%d (%Xh)  tileno=%d\n", (dec_markers + i)->len, (dec_markers + i)->len, (dec_markers + i)->pos_in,
-			(dec_markers + i)->pos_in, (dec_markers + i)->tile_num);
-	};
-	fclose(f);
-}
-
-#endif

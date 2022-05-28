@@ -9,35 +9,41 @@
 #include "..\jpwl\jpwl_decoder.h"
 #include "..\add_chaos\add_chaos.h"
 #include "..\add_chaos\chaos_params.h"
+#include "..\add_chaos\mt19937.h"
 
 #include "openjpeg\openjpeg.h"
 #include "convert.h"
 #include "format_defs.h"
 #include "memstream.h"
-
-#define WINDOW_SIZE 4
-#define MIN_TILES_PERC .9f
-#define ADAPTIVE_ITERATIONS 512
-#define ADAPTIVE_SIN_WIDTH 256
-#define MAX_ERRORS_PERC .2f
-
-typedef struct {
-	float MSE;		// Mean Square Error
-	float PSNR;		// Peak Signal/Noise Ratio
-} quality_factors;
-
-int const BUFFER_SIZE = 1ULL << 25; // 32Mb
-uint8_t const used_jpwl[] = { 38, 43, 48, 56, 64, 75, 85, 96, 112, 128 };
-uint8_t const test_jpwl[] = { 38, 43, 48, 56, 64, 75, 85, 96 };
-float const high_to_low[] = { .005f, .015f, .035f, .06f, .1f, .12f, .135f, .15f };
-wchar_t const* test_tile_xy = L"test_tile_xy.tsv";
-wchar_t const* test_err_perc = L"test_error_perc.tsv";
-wchar_t const* in_files[] = { 
-	L"..\\test_bmp\\Image1", L"..\\test_bmp\\Image2", L"..\\test_bmp\\Image3",
-	L"..\\test_bmp\\Image4", L"..\\test_bmp\\Image5", L"..\\test_bmp\\Image6",
-	L"..\\test_bmp\\Image7", L"..\\test_bmp\\Image8" };
+#include "experiment.h"
 
 opj_cparameters_t parameters;
+err_thresholds err_matrix[6] = {
+	{.tiles = .98f,
+	.thresholds = { .003f, .008f, .015f, .018f, .027f, .054f, .061f, .065f,
+		.084f, .118f, .131f, .147f, .153f, .162f, .168f, .168f }
+	},
+	{.tiles = .9f,
+	.thresholds = { .007f, .014f, .022f, .026f, .036f, .065f, .069f, .075f,
+		.097f, .131f, .144f, .161f, .165f, .175f, .181f, .184f }
+	},
+	{.tiles = .8f,
+	.thresholds = { .012f, .02f, .032f, .036f, .047f, .078f, .08f, .087f,
+		.113f, .147f, .161f, .178f, .18f, .191f, .197f, .203f }
+	},
+	{.tiles = .7f,
+	.thresholds = { .017f, .027f, .042f, .045f, .059f, .092f, .09f, .099f,
+		.129f, .163f, .177f, .195f, .195f, .207f, .213f, .222f }
+	},
+	{.tiles = .6f,
+	.thresholds = { .022f, .033f, .051f, .055f, .07f, .106f, .101f, .111f,
+		.144f, .18f, .194f, .212f, .21f, .224f, .229f, .241f }
+	},
+	{.tiles = .5f,
+	.thresholds = { .027f, .04f, .061f, .065f, .082f, .119f, .111f, .124f,
+		.16f, .196f, .21f, .228f, .225f, .24f, .245f, .26f }
+	}
+};
 
 static void error_callback(const char* msg, void* client_data)
 {
@@ -51,11 +57,62 @@ static void warning_callback(const char* msg, void* client_data)
 	fprintf(stdout, "[WARNING] %s", msg);
 }
 
-void get_bmp_info(uint8_t* bmp, opj_bmp_info_t* info) {
-	opj_bmp_header_t orig_header;
-	if (bmp_read_file_header(&bmp, &orig_header))
+void init_err_matrix(wchar_t const* filename) {
+	FILE* in;
+	if (_wfopen_s(&in, filename, L"rt, ccs=UTF-8"))
 		return;
-	bmp_read_info_header(&bmp, info);
+	FILE* out;
+	if (_wfopen_s(&out, L"..\\Backup\\init_err_matrix.tsv", L"wt, ccs=UTF-8"))
+		return;
+	if (!in || !out)
+		return;
+	int rs_prev_idx = 0;
+	float err_prev = 0, tiles_prev = 1.0f, min_tiles_prev = 1.0f;
+	for (int e = 0; e < ERR_MATRIX_ROWS; e++) {
+		while (getwc(in) != L'\n');
+		fwprintf(out, L"%.2f\n", err_matrix[e].tiles);
+		char idx_rdy = 0;
+		do {
+			int rs, rs_idx = 0;
+			float err, tiles, _;
+			fwscanf_s(in, L"%d\t%f\t%f\t%f\n", &rs, &err, &tiles, &_);
+			tiles *= .01f;
+			for (int i = 0; i < JPWL_CODES; i++) {
+				if (jpwl_codes[i] == rs) {
+					rs_idx = i;
+					break;
+				}
+			}
+			if (rs_prev_idx != rs_idx) {
+				rs_prev_idx = rs_idx;
+				tiles_prev = 1.0f;
+				err_prev = err > 1.0f ? err - 1.0f : 0;
+				idx_rdy = 0;
+			}
+			if (idx_rdy) continue;
+			if (tiles == err_matrix[e].tiles) {
+				err_matrix[e].thresholds[rs_idx] = err * .01f;
+				fwprintf(out, L"%.1f\t", err);
+				idx_rdy = 1;
+			}
+			else if (tiles_prev > err_matrix[e].tiles && err_matrix[e].tiles > tiles) {
+				float deltaT = tiles_prev - tiles;
+				float deltaE = err - err_prev;
+				float k = (tiles_prev - err_matrix[e].tiles) / deltaT;
+				err = err_prev + deltaE * k;
+				err_matrix[e].thresholds[rs_idx] = err * .01f;
+				fwprintf(out, L"%.1f\t", err);
+				idx_rdy = 1;
+			}
+
+			tiles_prev = tiles;
+			err_prev = err;
+		} while (!feof(in));
+		fwprintf(out, L"\n");
+		rewind(in);
+	}
+	fclose(in);
+	fclose(out);
 }
 
 errno_t calculate_qf(uint8_t* original_bmp, uint8_t* decoded_bmp, quality_factors* qf_result) {
@@ -262,7 +319,7 @@ float get_secs(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq) {
 	return elapsed.LowPart * .001f;
 }
 
-void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+void test_full_cycle(wchar_t const* bmp_name, float compression, int protection, int err_probability) {
 	uint8_t* bmp = NULL;
 	size_t bmp_size = 0;
 	wchar_t out_name[64], in_name[64];
@@ -273,19 +330,33 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 		return;
 	}
 
-	FILE* test_data;
-	if (_wfopen_s(&test_data, test_tile_xy, L"rt, ccs=UTF-8"))
-		return;
 	uint8_t* pack_sens = (uint8_t*)malloc(MAX_EPBSIZE);
 	uint16_t* tile_packets = (uint16_t*)malloc(MAX_TILES);
 	LARGE_INTEGER StartingTime, EndingTime, Frequency;
-	if (!pack_sens || !tile_packets || !test_data)
+	opj_memory_stream in_stream = {
+		.dataSize = BUFFER_SIZE,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE)
+	};
+	opj_memory_stream out_stream = {
+		.dataSize = BUFFER_SIZE,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE)
+	};
+	opj_memory_stream jpwl_stream = {
+		.dataSize = BUFFER_SIZE,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE)
+	};
+	if (!pack_sens || !tile_packets || !in_stream.pData || !out_stream.pData || !jpwl_stream.pData) {
+		wprintf(L"Memory allocation error, aborting\n");
 		return;
+	}
 
 	opj_set_default_encoder_parameters(&parameters);
 	parameters.decod_format = BMP_DFMT;
 	parameters.tcp_numlayers = 1;
-	parameters.tcp_rates[0] = 5;
+	parameters.tcp_rates[0] = compression;
 	parameters.cp_disto_alloc = 1;
 	parameters.irreversible = 1;
 	parameters.tile_size_on = 1;
@@ -298,7 +369,7 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 	jpwl_enc_bResults enc_bResults;
 	jpwl_enc_params enc_params;
 	jpwl_enc_set_default_params(&enc_params);
-	enc_params.wcoder_data = 64; // protection
+	enc_params.wcoder_data = protection;
 	enc_params.wcoder_mh = 1;
 	enc_params.wcoder_th = 1;
 	jpwl_enc_init(&enc_params);
@@ -307,126 +378,114 @@ void test_tile_count(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_
 	jpwl_dec_init();
 
 	quality_factors qf;
-	opj_memory_stream jpwl_stream = {
-		.dataSize = BUFFER_SIZE,
-		.offset = 0,
-		.pData = (uint8_t*)malloc(BUFFER_SIZE)
-	};
 
 	chaos_init();
-	float err_probability = .12f;
+	in_stream.offset = 0;
 
-	do {
-		int tile_x, tile_y;
-		in_stream->offset = 0;
+	QueryPerformanceFrequency(&Frequency);
+	QueryPerformanceCounter(&StartingTime);
+	err = encode_BMP_to_J2K(bmp, &in_stream, &parameters, TILES_X, TILES_Y);
+	if (err) {
+		wprintf(L"Something went wrong while encoding: code %d\n", err);
+		return;
+	}
+	QueryPerformanceCounter(&EndingTime);
 
-		fwscanf_s(test_data, L"%d\t%d\n", &tile_x, &tile_y);
-		wprintf(L"Testing with %d tiles\n", tile_x * tile_y);
+	wprintf(L"BMP to %.2f Mb J2K: ", in_stream.offset / 1048576.0f);
+	print_stats(StartingTime, EndingTime, Frequency, bmp_size);
 
-		QueryPerformanceFrequency(&Frequency);
-		QueryPerformanceCounter(&StartingTime);
-		errno_t err = encode_BMP_to_J2K(bmp, in_stream, &parameters, tile_x, tile_y);
-		if (err) {
-			wprintf(L"Something went wrong while encoding: code %d\n", err);
-			return;
-		}
-		QueryPerformanceCounter(&EndingTime);
+	sens_create(in_stream.pData, tile_packets, pack_sens);
 
-		wprintf(L"BMP to %.2f Mb J2K: ", in_stream->offset / 1048576.0f);
-		print_stats(StartingTime, EndingTime, Frequency, bmp_size);
+	jpwl_enc_bParams enc_bParams = {
+		.stream_len = (uint32_t)in_stream.offset,
+		.tile_packets = tile_packets,
+		.pack_sens = pack_sens
+	};
 
-		sens_create(in_stream->pData, tile_packets, pack_sens);
+	QueryPerformanceFrequency(&Frequency);
+	QueryPerformanceCounter(&StartingTime);
+	if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults))
+		return;
+	QueryPerformanceCounter(&EndingTime);
 
-		jpwl_enc_bParams enc_bParams = {
-			.stream_len = (uint32_t)in_stream->offset,
-			.tile_packets = tile_packets,
-			.pack_sens = pack_sens
-		};
+	wprintf(L"J2K to %.2f Mb JPWL: ", enc_bResults.wcoder_out_len / 1048576.0f);
+	print_stats(StartingTime, EndingTime, Frequency, in_stream.offset);
 
-		QueryPerformanceFrequency(&Frequency);
-		QueryPerformanceCounter(&StartingTime);
-		if (jpwl_enc_run(in_stream->pData, jpwl_stream.pData, &enc_bParams, &enc_bResults))
-			return;
-		QueryPerformanceCounter(&EndingTime);
+	if (err_probability > 0) {
+		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+		size_t packets = write_packets_with_interleave(
+			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+		int errors = create_packet_errors((int)packets, err_probability * .01f, 1);
+		size_t read_bytes = read_packets_with_deinterleave(
+			jpwl_stream.pData, packets, enc_params.wcoder_data);
+		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults.wcoder_mh_len);
+		enc_bResults.wcoder_out_len = (uint32_t)read_bytes;
+		wprintf(L"Tampered buffer with ~%.1f%% packet errors\n",
+			errors * 100.0f / enc_bResults.wcoder_out_len);
+	}
 
-		wprintf(L"J2K to %.2f Mb JPWL: ", enc_bResults.wcoder_out_len / 1048576.0f);
-		print_stats(StartingTime, EndingTime, Frequency, in_stream->offset);
+	jpwl_dec_bParams dec_bParams = {
+		.inp_buffer = jpwl_stream.pData,
+		.inp_length = enc_bResults.wcoder_out_len,
+		.out_buffer = in_stream.pData
+	};
 
-		if (err_probability > 0) {
-			memcpy(out_stream->pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
-			size_t packets = write_packets_with_interleave(
-				jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-			int errors = create_packet_errors((int)packets, err_probability, 1);
-			size_t read_bytes = read_packets_with_deinterleave(
-				jpwl_stream.pData, packets, enc_params.wcoder_data);
-			memcpy(jpwl_stream.pData, out_stream->pData, enc_bResults.wcoder_mh_len);
-			enc_bResults.wcoder_out_len = (uint32_t)read_bytes;
-			wprintf(L"Tampered buffer with ~%.1f%% packet errors\n",
-				errors * 100.0f / enc_bResults.wcoder_out_len);
-		}
+	QueryPerformanceFrequency(&Frequency);
+	QueryPerformanceCounter(&StartingTime);
+	if (jpwl_dec_run(&dec_bParams, &dec_bResults))
+		return;
+	QueryPerformanceCounter(&EndingTime);
 
-		jpwl_dec_bParams dec_bParams = {
-			.inp_buffer = jpwl_stream.pData,
-			.inp_length = enc_bResults.wcoder_out_len,
-			.out_buffer = in_stream->pData
-		};
+	wprintf(L"JPWL to %.2f Mb J2K: ", dec_bResults.out_length / 1048576.0f);
+	print_stats(StartingTime, EndingTime, Frequency, enc_bResults.wcoder_out_len);
+	wprintf(L"All bad: %d, partially restored: %d, fully restored: %d\n",
+		dec_bResults.all_bad_length, dec_bResults.tile_part_rest_cnt, dec_bResults.tile_all_rest_cnt);
+	restore_stats* stats = jpwl_dec_stats();
+	wprintf(L"Corrected/uncorrected bytes: %.1f%%/%.1f%%\n",
+		stats->corrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len,
+		stats->uncorrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len);
 
-		QueryPerformanceFrequency(&Frequency);
-		QueryPerformanceCounter(&StartingTime);
-		if (jpwl_dec_run(&dec_bParams, &dec_bResults))
-			return;
-		QueryPerformanceCounter(&EndingTime);
+	jpwl_stream.offset = 0;
+	out_stream.offset = 0;
+	in_stream.offset = 0;
 
-		wprintf(L"JPWL to %.2f Mb J2K: ", dec_bResults.out_length / 1048576.0f);
-		print_stats(StartingTime, EndingTime, Frequency, enc_bResults.wcoder_out_len);
-		wprintf(L"All bad: %d, partially restored: %d, fully restored: %d\n",
-			dec_bResults.all_bad_length, dec_bResults.tile_part_rest_cnt, dec_bResults.tile_all_rest_cnt);
-		restore_stats* stats = jpwl_dec_stats();
-		wprintf(L"Corrected/uncorrected bytes: %.1f%%/%.1f%%\n",
-			stats->corrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len,
-			stats->uncorrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len);
+	QueryPerformanceFrequency(&Frequency);
+	QueryPerformanceCounter(&StartingTime);
+	err = decode_J2K_to_BMP(&in_stream, &out_stream);
+	if (err) {
+		wprintf(L"Something went wrong while decoding: code %d\n", err);
+		return;
+	}
+	QueryPerformanceCounter(&EndingTime);
 
-		jpwl_stream.offset = 0;
-		out_stream->offset = 0;
-		in_stream->offset = 0;
-
-		QueryPerformanceFrequency(&Frequency);
-		QueryPerformanceCounter(&StartingTime);
-		err = decode_J2K_to_BMP(in_stream, out_stream);
-		if (err) {
-			wprintf(L"Something went wrong while decoding: code %d\n", err);
-			return;
-		}
-		QueryPerformanceCounter(&EndingTime);
-
-		wprintf(L"J2K to %.2f Mb BMP: ", out_stream->offset / 1048576.0f);
-		print_stats(StartingTime, EndingTime, Frequency, dec_bResults.out_length);
+	wprintf(L"J2K to %.2f Mb BMP: ", out_stream.offset / 1048576.0f);
+	print_stats(StartingTime, EndingTime, Frequency, dec_bResults.out_length);
 	
-		err = calculate_qf(bmp, out_stream->pData, &qf);
-		if (err) {
-			wprintf(L"Something went wrong while comparing images: code %d\n", err);
-			return;
-		}
-		wprintf(L"Comparison result: MSE = %.2f, PSNR = %.2fdB\n", qf.MSE, qf.PSNR);
+	err = calculate_qf(bmp, out_stream.pData, &qf);
+	if (err) {
+		wprintf(L"Something went wrong while comparing images: code %d\n", err);
+		return;
+	}
+	wprintf(L"Comparison result: MSE = %.2f, PSNR = %.2fdB\n", qf.MSE, qf.PSNR);
 
-		swprintf(out_name, 64, L"%s_%dx%d_%dp.bmp",
-			bmp_name, tile_x, tile_y, (uint32_t)(err_probability * 100));
-		save_BMP_to_file(out_name, out_stream->pData, out_stream->offset);
-		if (err) {
-			wprintf(L"Something went wrong while writing bmp: code %d\n", err);
-			return;
-		}
-		wprintf(L"BMP file saved: %lld bytes\n\n", out_stream->offset);
-	} while (!feof(test_data));
+	swprintf(out_name, 64, L"%s_%dx%d_%dp.bmp",
+		bmp_name, TILES_X, TILES_Y, err_probability);
+	save_BMP_to_file(out_name, out_stream.pData, out_stream.offset);
+	if (err) {
+		wprintf(L"Something went wrong while writing bmp: code %d\n", err);
+		return;
+	}
+	wprintf(L"BMP file saved: %lld bytes\n\n", out_stream.offset);
 
 	jpwl_destroy();
 	free(pack_sens);
 	free(jpwl_stream.pData);
+	free(in_stream.pData);
+	free(out_stream.pData);
 	free(tile_packets);
-	fclose(test_data);
 }
 
-void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+void test_error_recovery(wchar_t const* bmp_name, float compression, int iterations) {
 	uint8_t* bmp = NULL;
 	size_t bmp_size = 0;
 	wchar_t in_name[64];
@@ -438,18 +497,41 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 	}
 
 	FILE* test_data;
-	if (_wfopen_s(&test_data, L"test_error_recovery.tsv", L"wt, ccs=UTF-8"))
+	if (_wfopen_s(&test_data, L"..\\Backup\\test_error_recovery.tsv", L"wt, ccs=UTF-8"))
 		return;
 	uint8_t* pack_sens = (uint8_t*)malloc(MAX_EPBSIZE);
 	uint16_t* tile_packets = (uint16_t*)malloc(MAX_TILES);
 	LARGE_INTEGER StartingTime, EndingTime, Frequency;
-	if (!pack_sens || !tile_packets || !test_data)
+	opj_memory_stream in_stream = {
+		.dataSize = BUFFER_SIZE,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE)
+	};
+	opj_memory_stream out_stream = {
+		.dataSize = BUFFER_SIZE,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE)
+	};
+	opj_memory_stream jpwl_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+	opj_memory_stream jpwl_copy_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+	if (!pack_sens || !tile_packets || !test_data || !in_stream.pData || !out_stream.pData 
+		|| !jpwl_stream.pData || !jpwl_copy_stream.pData) {
+		wprintf(L"Memory allocation error, aborting\n");
 		return;
+	}
 
 	opj_set_default_encoder_parameters(&parameters);
 	parameters.decod_format = BMP_DFMT;
 	parameters.tcp_numlayers = 1;
-	parameters.tcp_rates[0] = 5;
+	parameters.tcp_rates[0] = compression;
 	parameters.cp_disto_alloc = 1;
 	parameters.irreversible = 1;
 	parameters.tile_size_on = 1;
@@ -468,59 +550,39 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 	jpwl_dec_bResults dec_bResults;
 	jpwl_dec_init();
 
-	opj_memory_stream jpwl_stream = {
-		.dataSize = BUFFER_SIZE >> 1,
-		.offset = 0,
-		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
-	};
-	opj_memory_stream jpwl_copy_stream = {
-		.dataSize = BUFFER_SIZE >> 1,
-		.offset = 0,
-		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
-	};
-
-	int tiles_x = 10, tiles_y = 10;
-	QueryPerformanceFrequency(&Frequency);
-	QueryPerformanceCounter(&StartingTime);
-	err = encode_BMP_to_J2K(bmp, in_stream, &parameters, tiles_x, tiles_y);
+	err = encode_BMP_to_J2K(bmp, &in_stream, &parameters, TILES_X, TILES_Y);
 	if (err) {
 		wprintf(L"Something went wrong while encoding to J2K code %d\n", err);
 		return;
 	}
-	QueryPerformanceCounter(&EndingTime);
-	opj_bmp_info_t bmp_info;
-	get_bmp_info(bmp, &bmp_info);
-	fwprintf(test_data, L"%s.j2k %dx%d %zd %.2fs\n", bmp_name, bmp_info.biWidth, bmp_info.biHeight,
-		in_stream->offset, get_secs(StartingTime, EndingTime, Frequency));
 
-	sens_create(in_stream->pData, tile_packets, pack_sens);
+	sens_create(in_stream.pData, tile_packets, pack_sens);
 	jpwl_enc_bParams enc_bParams = {
-		.stream_len = (uint32_t)in_stream->offset,
+		.stream_len = (uint32_t)in_stream.offset,
 		.tile_packets = tile_packets,
 		.pack_sens = pack_sens
 	};
 
 	chaos_init();
-	float err_probability = .0f;
+	int err_probability = 0;
 	fwprintf(test_data, L"RS code\tBuffer errors\tRecovered tiles\tTime\n");
 
-	for (int i = 0; i < sizeof(used_jpwl); i++) {
-		enc_params.wcoder_data = used_jpwl[i]; // protection
+	for (int i = 0; i < JPWL_CODES; i++) {
+		enc_params.wcoder_data = jpwl_codes[i]; // protection
 		jpwl_enc_init(&enc_params);
 
-		in_stream->offset = 0;
-		if (jpwl_enc_run(in_stream->pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+		in_stream.offset = 0;
+		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
 			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
 			continue;
 		}
 
-		while (err_probability < .5f) {
+		while (err_probability < 50) {
 			jpwl_dec_bParams dec_bParams = {
 				.inp_buffer = jpwl_copy_stream.pData,
 				.inp_length = enc_bResults.wcoder_out_len,
-				.out_buffer = out_stream->pData
+				.out_buffer = out_stream.pData
 			};
-			int iterations = 8;
 			int recovered_tiles = 0;
 			float errors = 0;
 			QueryPerformanceFrequency(&Frequency);
@@ -528,7 +590,8 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 			for (int j = 0; j < iterations; j++) {
 				size_t packets = write_packets_with_interleave(
 					jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-				errors += create_packet_errors((int)packets, err_probability, 1) * 100.0f / enc_bResults.wcoder_out_len;
+				errors += create_packet_errors((int)packets, err_probability * .01f, 1)
+					* 100.0f / enc_bResults.wcoder_out_len;
 				(void)read_packets_with_deinterleave(
 					jpwl_copy_stream.pData, packets, enc_params.wcoder_data);
 				// Restore main header - we assume that it will be intact
@@ -540,7 +603,7 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 				recovered_tiles += dec_bResults.tile_all_rest_cnt;
 				jpwl_stream.offset = 0;
 				jpwl_copy_stream.offset = 0;
-				out_stream->offset = 0;
+				out_stream.offset = 0;
 			}
 			QueryPerformanceCounter(&EndingTime);
 			errors /= iterations;
@@ -548,13 +611,13 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 			fwprintf(test_data, L"%d\t%.1f\t%d\t%.3f\n", enc_params.wcoder_data, errors, recovered_tiles,
 				get_secs(StartingTime, EndingTime, Frequency) / iterations);
 
-			if (recovered_tiles > (tiles_x * tiles_y) * 9 / 10) {
-				err_probability += .005f;
+			if (recovered_tiles > ((TILES_X * TILES_Y) >> 1)) {
+				err_probability++;
 			}
 			else {
-				err_probability -= .03f;
-				if (err_probability < 0)
-					err_probability = 0;
+				int sd = err_probability >> 1;
+				sd = sd > 5 ? sd : 5;
+				err_probability -= sd > err_probability ? err_probability : sd;
 				break;
 			}
 		}
@@ -564,20 +627,22 @@ void test_error_recovery(wchar_t const* bmp_name, opj_memory_stream* in_stream, 
 	jpwl_destroy();
 	free(pack_sens);
 	free(jpwl_stream.pData);
+	free(in_stream.pData);
+	free(out_stream.pData);
 	free(jpwl_copy_stream.pData);
 	free(tile_packets);
 	fflush(test_data);
 	fclose(test_data);
 }
 
-void select_params_adaptive(float buffer_errors, float recovered_tiles, jpwl_enc_params* params) {
+void select_params_adaptive(float buffer_errors, float recovered_tiles, float min_tiles_percent, jpwl_enc_params* params) {
 	static float prev_rec_errors[WINDOW_SIZE] = { 0, 0, 0, 0 };
 	static float prev_rec_tiles[WINDOW_SIZE] = { 0, 0, 0, 0 };
-	static int prev_idx = 0;
+	static int prev_idx = 0, window_cnt = 0;
 
-	int jpwl_idx = 0, jpwl_codes = sizeof(test_jpwl);
-	for (int i = 0; i < jpwl_codes; i++) {
-		if (test_jpwl[i] == params->wcoder_data) {
+	int jpwl_idx = 0;
+	for (int i = 0; i < JPWL_CODES; i++) {
+		if (jpwl_codes[i] == params->wcoder_data) {
 			jpwl_idx = i;
 			break;
 		}
@@ -587,7 +652,9 @@ void select_params_adaptive(float buffer_errors, float recovered_tiles, jpwl_enc
 	prev_idx++;
 	if (prev_idx >= WINDOW_SIZE) {
 		prev_idx = 0;
+	}
 
+	if (window_cnt >= WINDOW_SIZE) {
 		float avg_errors = 0, avg_tiles = 0;
 		for (int i = 0; i < WINDOW_SIZE; i++) {
 			avg_errors += prev_rec_errors[i];
@@ -596,144 +663,70 @@ void select_params_adaptive(float buffer_errors, float recovered_tiles, jpwl_enc
 		avg_errors /= WINDOW_SIZE;
 		avg_tiles /= WINDOW_SIZE;
 
-		int step = 0;
-		if (avg_tiles < MIN_TILES_PERC) {
-			// step up in range 1..3
-			avg_tiles = (MIN_TILES_PERC - avg_tiles) * (2.0f / MIN_TILES_PERC);
-			step = (int)avg_tiles + 1;
-			if (jpwl_idx + step >= jpwl_codes) {
-				step = jpwl_codes - 1 - jpwl_idx;
+		int matrix_idx = ERR_MATRIX_ROWS - 1;
+		for (int i = 0; i < ERR_MATRIX_ROWS; i++) {
+			if (err_matrix[i].tiles <= min_tiles_percent) {
+				matrix_idx = i;
+				break;
 			}
 		}
-		else if (avg_tiles > .98f) {
-			if (jpwl_idx > 0 && high_to_low[jpwl_idx - 1] > avg_errors) {
-				step = -1;
+		float err_thresholds[JPWL_CODES];
+		memcpy_s(err_thresholds, JPWL_CODES * sizeof(err_thresholds[0]),
+			err_matrix[matrix_idx].thresholds, JPWL_CODES * sizeof(err_matrix[matrix_idx].thresholds[0]));
+		if (matrix_idx > 0 && min_tiles_percent > err_matrix[ERR_MATRIX_ROWS - 1].tiles) {
+			float linear_approx_k = (min_tiles_percent - err_matrix[matrix_idx].tiles) /
+				(err_matrix[matrix_idx - 1].tiles - err_matrix[matrix_idx].tiles);
+			for (int i = 0; i < JPWL_CODES; i++) {
+				err_thresholds[i] += (err_matrix[matrix_idx - 1].thresholds[i] - err_thresholds[i]) * linear_approx_k;
+			}
+		}
+		// This RS code selection based on detected errors in stream
+		int guessed_code_idx = JPWL_CODES - 1;
+		for (int i = 1; i < JPWL_CODES; i++) {
+			if (err_thresholds[i] > avg_errors) {
+				guessed_code_idx = i - 1;
+				break;
 			}
 		}
 
-		params->wcoder_data = test_jpwl[jpwl_idx + step];
+		float max_tiles_percent = min_tiles_percent > .88f ? .99f : (min_tiles_percent + .1f);
+		int selected_code_idx = jpwl_idx;
+		// Now we need to check more valuable parameter - recovered tiles percentage
+		if (avg_tiles < min_tiles_percent) {
+			int step = max((int)((min_tiles_percent - avg_tiles) * JPWL_CODES), 1);
+			selected_code_idx = min(jpwl_idx + step, JPWL_CODES - 1);
+			selected_code_idx = max(guessed_code_idx, selected_code_idx);
+			window_cnt = WINDOW_SIZE >> 1;
+		}
+		else if (avg_tiles > max_tiles_percent) {
+			selected_code_idx = (jpwl_idx + guessed_code_idx) >> 1;
+			window_cnt = WINDOW_SIZE >> 1;
+		}
+
+		params->wcoder_data = jpwl_codes[selected_code_idx];
+	}
+	else {
+		window_cnt++;
 	}
 }
 
-void test_adaptive_algorithm(wchar_t const* bmp_name, opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int min_tiles_percent, error_functions func) {
 	uint8_t* bmp = NULL;
 	size_t bmp_size = 0;
-	wchar_t in_name[64];
-	swprintf(in_name, 64, L"%s.bmp", bmp_name);
-	errno_t err = read_BMP_from_file(in_name, &bmp, &bmp_size);
+	wchar_t name[64];
+	swprintf(name, 64, L"%s.bmp", bmp_name);
+	errno_t err = read_BMP_from_file(name, &bmp, &bmp_size);
 	if (!bmp || err) {
 		wprintf(L"Something went wrong while reading bmp: code %d\n", err);
 		return;
 	}
 
 	FILE* test_data;
-	if (_wfopen_s(&test_data, L"test_adaptive.tsv", L"wt, ccs=UTF-8"))
+	swprintf(name, 64, L"..\\Backup\\adaptive_%dt_%df.tsv", min_tiles_percent, func);
+	if (_wfopen_s(&test_data, name, L"wt, ccs=UTF-8"))
 		return;
 	uint8_t* pack_sens = (uint8_t*)malloc(MAX_EPBSIZE);
 	uint16_t* tile_packets = (uint16_t*)malloc(MAX_TILES);
-	opj_memory_stream jpwl_stream = {
-		.dataSize = BUFFER_SIZE >> 1,
-		.offset = 0,
-		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
-	};
-	if (!pack_sens || !tile_packets || !test_data || !jpwl_stream.pData)
-		return;
-
-	opj_set_default_encoder_parameters(&parameters);
-	parameters.decod_format = BMP_DFMT;
-	parameters.tcp_numlayers = 1;
-	parameters.tcp_rates[0] = 5;
-	parameters.cp_disto_alloc = 1;
-	parameters.irreversible = 1;
-	parameters.tile_size_on = 1;
-
-	if (jpwl_init())
-	{
-		wprintf(L"JPWL init failed");
-		return;
-	}
-	jpwl_enc_bResults enc_bResults;
-	jpwl_enc_params enc_params;
-	jpwl_enc_set_default_params(&enc_params);
-	enc_params.wcoder_data = test_jpwl[0];
-	enc_params.wcoder_mh = 1;
-	enc_params.wcoder_th = 1;
-
-	jpwl_dec_bResults dec_bResults;
-	jpwl_dec_init();
-
-	int tiles_x = 10, tiles_y = 10;
-	err = encode_BMP_to_J2K(bmp, in_stream, &parameters, tiles_x, tiles_y);
-	if (err) {
-		wprintf(L"Something went wrong while encoding to J2K code %d\n", err);
-		return;
-	}
-	opj_bmp_info_t bmp_info;
-	get_bmp_info(bmp, &bmp_info);
-	fwprintf(test_data, L"%s.j2k %dx%d %zd\n", bmp_name, bmp_info.biWidth, bmp_info.biHeight, in_stream->offset);
-
-	sens_create(in_stream->pData, tile_packets, pack_sens);
-	jpwl_enc_bParams enc_bParams = {
-		.stream_len = (uint32_t)in_stream->offset,
-		.tile_packets = tile_packets,
-		.pack_sens = pack_sens
-	};
-
-	chaos_init();
-	fwprintf(test_data, L"Iteration\tRS code\tBuffer errors\tRecovered tiles\n");
-
-	for (int i = 0; i < ADAPTIVE_ITERATIONS; i++) {
-		jpwl_stream.offset = 0;
-		out_stream->offset = 0;
-		in_stream->offset = 0;
-
-		jpwl_enc_init(&enc_params);
-		if (jpwl_enc_run(in_stream->pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
-			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
-			continue;
-		}
-
-		size_t packets = write_packets_with_interleave(
-			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-		memcpy(out_stream->pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
-		// error function
-		float err_prob = (cosf((float)i / ADAPTIVE_SIN_WIDTH * 3.1415927f) + 1.0f) * .5f * MAX_ERRORS_PERC;
-		int errors = create_packet_errors((int)packets, err_prob, 1);
-		memcpy(jpwl_stream.pData, out_stream->pData, enc_bResults.wcoder_mh_len);
-		(void)read_packets_with_deinterleave(jpwl_stream.pData, packets, enc_params.wcoder_data);
-
-		jpwl_dec_bParams dec_bParams = {
-			.inp_buffer = jpwl_stream.pData,
-			.inp_length = enc_bResults.wcoder_out_len,
-			.out_buffer = out_stream->pData
-		};
-		if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
-			wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
-			continue;
-		}
-		float buffer_errors = (float)errors / enc_bResults.wcoder_out_len;
-		float recovered_tiles = (float)dec_bResults.tile_all_rest_cnt / (tiles_x * tiles_y);
-
-		fwprintf(test_data, L"%d\t%d\t%.3f\t%.2f\n", i, enc_params.wcoder_data, buffer_errors, recovered_tiles);
-		select_params_adaptive(buffer_errors, recovered_tiles, &enc_params);
-
-		if (!(i & 31)) {
-			wprintf(L"\rTest iteration %d completed", i);
-		}
-	};
-
-	jpwl_destroy();
-	free(pack_sens);
-	free(jpwl_stream.pData);
-	free(tile_packets);
-	fflush(test_data);
-	fclose(test_data);
-}
-
-int main(int argc, wchar_t* argv[])
-{
-	wprintf(L"hello\n");
-
 	opj_memory_stream in_stream = {
 		.dataSize = BUFFER_SIZE,
 		.offset = 0,
@@ -744,32 +737,175 @@ int main(int argc, wchar_t* argv[])
 		.offset = 0,
 		.pData = (uint8_t*)malloc(BUFFER_SIZE)
 	};
+	opj_memory_stream jpwl_stream = {
+		.dataSize = BUFFER_SIZE >> 1,
+		.offset = 0,
+		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
+	};
+	if (!pack_sens || !tile_packets || !test_data || !jpwl_stream.pData || !in_stream.pData || !out_stream.pData)
+	{
+		wprintf(L"Memory allocation error, aborting\n");
+		return;
+	}
+
+	opj_set_default_encoder_parameters(&parameters);
+	parameters.decod_format = BMP_DFMT;
+	parameters.tcp_numlayers = 1;
+	parameters.tcp_rates[0] = DEFAULT_COMPRESSION;
+	parameters.cp_disto_alloc = 1;
+	parameters.irreversible = 1;
+	parameters.tile_size_on = 1;
+
+	if (jpwl_init())
+	{
+		wprintf(L"JPWL init failed\n");
+		return;
+	}
+	jpwl_enc_bResults enc_bResults;
+	jpwl_enc_params enc_params;
+	jpwl_enc_set_default_params(&enc_params);
+	enc_params.wcoder_data = jpwl_codes[0];
+	enc_params.wcoder_mh = 1;
+	enc_params.wcoder_th = 1;
+
+	jpwl_dec_bResults dec_bResults;
+	jpwl_dec_init();
+
+	err = encode_BMP_to_J2K(bmp, &in_stream, &parameters, TILES_X, TILES_Y);
+	if (err) {
+		wprintf(L"Something went wrong while encoding to J2K code %d\n", err);
+		return;
+	}
+	sens_create(in_stream.pData, tile_packets, pack_sens);
+	jpwl_enc_bParams enc_bParams = {
+		.stream_len = (uint32_t)in_stream.offset,
+		.tile_packets = tile_packets,
+		.pack_sens = pack_sens
+	};
+
+	chaos_init();
+	fwprintf(test_data, L"Iteration\tRS code\tBuffer errors\tRecovered tiles\n");
+
+	float err_prob = 0;
+	for (int i = 0; i < ADAPTIVE_ITERATIONS; i++) {
+		jpwl_stream.offset = 0;
+		out_stream.offset = 0;
+		in_stream.offset = 0;
+
+		jpwl_enc_init(&enc_params);
+		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
+			continue;
+		}
+
+		size_t packets = write_packets_with_interleave(
+			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+
+		switch (func)
+		{
+		case SINEWAVE:
+			err_prob = (cosf((float)i / 50 * 3.1415927f) + 1.0f) * max_error_percent * .005f;
+			break;
+
+		case STEPPER:
+			if (!(i % 25)) {
+				err_prob = get_rand_float() * max_error_percent * .01f;
+			}
+			break;
+
+		case RISING:
+			err_prob = (1.0f - cosf((float)i / ADAPTIVE_ITERATIONS * 3.1415927f)) * max_error_percent * .005f;
+			break;
+
+		case FALLING:
+			err_prob = (cosf((float)i / ADAPTIVE_ITERATIONS * 3.1415927f) + 1.0f) * max_error_percent * .005f;
+			break;
+
+		default:
+			break;
+		}
+		int errors = create_packet_errors((int)packets, err_prob, 1);
+		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults.wcoder_mh_len);
+		(void)read_packets_with_deinterleave(jpwl_stream.pData, packets, enc_params.wcoder_data);
+
+		jpwl_dec_bParams dec_bParams = {
+			.inp_buffer = jpwl_stream.pData,
+			.inp_length = enc_bResults.wcoder_out_len,
+			.out_buffer = out_stream.pData
+		};
+		if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
+			wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
+			continue;
+		}
+		float buffer_errors = (float)errors / enc_bResults.wcoder_out_len;
+		float recovered_tiles = (float)dec_bResults.tile_all_rest_cnt / (TILES_X * TILES_Y);
+
+		fwprintf(test_data, L"%d\t%d\t%.1f\t%d\n", i, enc_params.wcoder_data, 
+			buffer_errors * 100.0f, (int)(recovered_tiles * 100.0f));
+		select_params_adaptive(buffer_errors, recovered_tiles, min_tiles_percent * .01f, &enc_params);
+
+		if (!(i & 15)) {
+			wprintf(L"\rTest iteration %d completed", i);
+		}
+	};
+
+	jpwl_destroy();
+	free(pack_sens);
+	free(jpwl_stream.pData);
+	free(in_stream.pData);
+	free(out_stream.pData);
+	free(tile_packets);
+	fflush(test_data);
+	fclose(test_data);
+}
+
+int main(int argc, wchar_t* argv[])
+{
+	wprintf(L"hello\n");
+	init_err_matrix(L"test_error_recovery.tsv");
+
 	int opt;
 	wprintf(L"Select test\n");
-	wprintf(L"1 - single image full cycle\n");
-	wprintf(L"2 - error resilience\n");
-	wprintf(L"3 - adaptive test\n");
+	wprintf(L"0 - single image full cycle\n");
+	wprintf(L"1 - error resilience\n");
+	wprintf(L"2 - adaptive test\n");
+	wprintf(L"3 - adaptive deep test\n");
 	wscanf_s(L"%d", &opt);
 	switch (opt)
 	{
+	case 0:
+		test_full_cycle(in_files[4], DEFAULT_COMPRESSION, 80, 12);
+		break;
+
 	case 1:
-		test_tile_count(in_files[5], &in_stream, &out_stream);
+		test_error_recovery(in_files[5], DEFAULT_COMPRESSION, 8);
 		break;
 
 	case 2:
-		test_error_recovery(in_files[6], &in_stream, &out_stream);
+		wprintf(L"Select error function:\n");
+		wprintf(L"0 - sinewave\n");
+		wprintf(L"1 - stepper\n");
+		wprintf(L"2 - rising\n");
+		wprintf(L"3 - falling\n");
+		error_functions ef;
+		wscanf_s(L"%d", &ef);
+		test_adaptive_algorithm(in_files[6], 20, 50, ef);
 		break;
 
 	case 3:
-		test_adaptive_algorithm(in_files[6], &in_stream, &out_stream);
+		for (int i = 0; i < 4; i++) {
+			int error_prob[6] = { 99, 90, 80, 70, 60, 50 };
+			for (int j = 0; j < 6; j++) {
+				wprintf(L"Testing with %d%% target tiles and with %d mode\n", error_prob[j], i);
+				test_adaptive_algorithm(in_files[6], 20, error_prob[j], i);
+			}
+		}
 		break;
 
 	default:
 		break;
 	}
-
-	free(in_stream.pData);
-	free(out_stream.pData);
 
 	return 0;
 }

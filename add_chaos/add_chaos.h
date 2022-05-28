@@ -1,11 +1,6 @@
 ﻿#pragma once 
 #include <stdint.h>
-#include "chaos_params.h"
 
-/* 
- * brief Установка по умолчанию значений параметров библиотеки на стороне передатчика
- * param a_h_p_t Стркутура типа chaos_params_t с параметрами библиотеки на стороне передатчика
- */
 #ifndef __cplusplus
 __declspec(dllimport)
 #else
@@ -13,13 +8,6 @@ extern "C" __declspec(dllimport)
 #endif
 void chaos_init();
 
-/* 
- * brief Вызов действий библиотеки по зашумлению RTP-пакетов в реальном масштабе времени
- * details Зашумляет входной буфер и копирует во входной. Если адреса входного и выходного буфера совпадают, копирование не производится
- * param in_stream Входной буфер с подготовленными RTP-пакетами
- * param out_stream Выходной буфер с зашумленными RTP-пакетами
- * param buf_par Побочные входные данные - адрес массива, в котором записаны длины RTP пакетов, и количество пакетов
- */
 #ifndef __cplusplus
 __declspec(dllimport)
 #else
