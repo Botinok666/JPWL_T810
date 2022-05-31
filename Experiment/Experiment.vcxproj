@@ -174,16 +174,20 @@ xcopy $(ProjectDir)openjpeg\openjp2.lib $(OutDir) /Y /D</Command>
   <ItemGroup>
     <ClCompile Include="convertbmp.c" />
     <ClCompile Include="Experiment.c" />
+    <ClCompile Include="image_coders.c" />
     <ClCompile Include="memstream.c" />
+    <ClCompile Include="tests.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="convert.h" />
     <ClInclude Include="experiment.h" />
     <ClInclude Include="format_defs.h" />
+    <ClInclude Include="image_coders.h" />
     <ClInclude Include="openjpeg\openjpeg.h" />
     <ClInclude Include="openjpeg\opj_stdint.h" />
     <ClInclude Include="memstream.h" />
     <ClInclude Include="opj_codec.h" />
+    <ClInclude Include="tests.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jpwl\jpwl.vcxproj">

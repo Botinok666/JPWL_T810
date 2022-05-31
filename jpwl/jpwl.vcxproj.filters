@@ -27,6 +27,9 @@
     <ClCompile Include="jpwl_encoder.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="adaptive.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="jpwl_encoder.h">
@@ -45,6 +48,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="crc.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="adaptive.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

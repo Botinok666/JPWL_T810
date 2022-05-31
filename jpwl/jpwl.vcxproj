@@ -177,12 +177,14 @@ xcopy $(ProjectDir)rs64\RS64.lib $(OutDir) /Y /D</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="adaptive.c" />
     <ClCompile Include="crc.c" />
     <ClCompile Include="jpwl_decoder.c" />
     <ClCompile Include="jpwl_encoder.c" />
     <ClCompile Include="rs64\rs64.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="adaptive.h" />
     <ClInclude Include="crc.h" />
     <ClInclude Include="jpwl_decoder.h" />
     <ClInclude Include="jpwl_encoder.h" />

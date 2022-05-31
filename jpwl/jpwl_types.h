@@ -54,6 +54,7 @@
 #define MAX_BADPARTS 13500	/// Макс. кол-во некорректируемых фрагментов пост-данных блока EPB
 #define MAX_INTERVALS 6553 /// Макс. кол-во интервалов RED - 1 REd по 10 байт на 1 интервал
 #define TILE_MINLENGTH 80	/// Минимальная длина тайла
+#define JPWL_CODES 16
 
 typedef unsigned char _bool_;
 typedef unsigned char* addr_char;
