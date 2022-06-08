@@ -1262,6 +1262,10 @@ errno_t image_to_bmp(opj_image_t* image, uint8_t* bmp, size_t bmp_size, size_t* 
 		*(uint32_t*)(bmp + len) = 0;
 		len += 4;
 
+		if (written_bytes > 0) {
+			return 0;
+		}
+
 		if (image->comps[0].prec > 8) {
 			adjustR = (int)image->comps[0].prec - 8;
 		}

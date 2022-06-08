@@ -29,7 +29,25 @@ int main(int argc, wchar_t* argv[])
 	switch (opt)
 	{
 	case 0:
-		test_full_cycle(in_files[4], DEFAULT_COMPRESSION, 80, 12);
+		wprintf(L"Protection code: ");
+		int ep, prot, i;
+		wscanf_s(L"%d", &prot);
+		int codes[16] = { 37, 38, 40, 43, 45, 48, 51, 53, 56, 64, 75, 80, 85, 96, 112, 128 };
+		for (i = 0; i < 16; i++) {
+			if (codes[i] == prot) break;
+		}
+		if (i == 16) {
+			wprintf(L"Code is not supported\n");
+			break;
+		}
+		wprintf(L"Error probability: ");
+		wscanf_s(L"%d", &ep);
+		if (ep > 25 || ep < 0) {
+			wprintf(L"Wrong value\n");
+			break;
+		}
+
+		test_full_cycle(in_files[4], DEFAULT_COMPRESSION, prot, ep);
 		break;
 
 	case 1:

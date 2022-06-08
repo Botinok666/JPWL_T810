@@ -137,7 +137,7 @@ errno_t encode_BMP_to_J2K(uint8_t* bmp, opj_memory_stream* out_stream, opj_cpara
 	return 0;
 }
 
-errno_t decode_J2K_to_BMP(opj_memory_stream* in_stream, opj_memory_stream* out_stream) {
+errno_t decode_J2K_to_BMP(opj_memory_stream* in_stream, opj_memory_stream* out_stream, int* tile_positions) {
 	opj_dparameters_t* parameters = (opj_dparameters_t*)malloc(sizeof(opj_dparameters_t));
 	if (!parameters)
 		return -1;
@@ -162,11 +162,38 @@ errno_t decode_J2K_to_BMP(opj_memory_stream* in_stream, opj_memory_stream* out_s
 		free_res3(decompressor, image, parameters);
 		return -3;
 	}
+	opj_decoder_set_strict_mode(decompressor, FALSE);
+	uint8_t* p_data = NULL, * pix_data = out_stream->pData + 54;
+	while (1) {
+		uint32_t tile_idx, data_size, numcomps;
+		int x0, y0, x1, y1, go_on;
 
-	if (!(opj_decode(decompressor, input, image) &&
-		opj_end_decompress(decompressor, input))) {
-		free_res3(decompressor, image, parameters);
-		return -4;
+		opj_read_tile_header(decompressor, input, &tile_idx, &data_size,
+			&x0, &y0, &x1, &y1, &numcomps, &go_on);
+		if (!go_on) break;
+
+		if (!p_data) {
+			out_stream->offset = TILES_X * TILES_Y * data_size + 54;
+			p_data = malloc(data_size);
+			if (!p_data) {
+				return -1;
+			}
+		}
+		opj_decode_tile_data(decompressor, tile_idx, p_data, data_size, input);
+
+		uint8_t* data = p_data;
+		uint32_t shift = image->x1 - x0 + y0 * image->x1 - 1;
+
+		for (uint32_t c = 1; c <= numcomps; c++) {
+			uint8_t* p_data = pix_data + TILES_X * TILES_Y * data_size - c - shift * (size_t)numcomps;
+			for (int j = y0; j < y1; j++) {
+				for (int k = x0; k < x1; k++) {
+					*p_data = *data++;
+					p_data += numcomps;
+				}
+				p_data -= ((size_t)image->x1 + x1 - x0) * numcomps;
+			}
+		}
 	}
 
 	errno_t err = image_to_bmp(image, out_stream->pData, out_stream->dataSize, &out_stream->offset);

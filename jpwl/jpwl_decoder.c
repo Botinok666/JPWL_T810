@@ -35,6 +35,7 @@ unsigned short tile_all_rest_cnt;	///< Количество полностью �
 unsigned short tile_red_rest_cnt;	///< Количество частично восстановленных тайлов кадра, в которых присутствуют маркеры RED
 unsigned long bad_block_length;		 ///< Количество нераспознанных как тайл байт данных
 restore_stats stats;
+int* _tile_positions;
 
 /**
  * \brief определение способа защиты пост-данных блока EPB
@@ -629,6 +630,8 @@ uint8_t* dec_tile_correct(uint8_t* tile)
 		if (markers_cnt >= MAX_MARKERS)
 			return NULL;
 		has_bad_blocks = _true_;
+		_tile_positions[tile_count] = 0;
+
 		markers_cnt = mark_count_old;		// откат счетчика маркеров
 		dec_markers[markers_cnt].id = BAD_ID;	// создаем bad блок размером с тайл
 		bad_block_length += sot_l;
@@ -672,8 +675,10 @@ uint8_t* dec_tile_correct(uint8_t* tile)
 			w += dec_markers[markers_cnt++].len + 2ULL;		// переводим адрес на потенциально следующий ESD
 		};
 
-		if (badparts > 0)
+		if (badparts > 0) {
 			tile_red_rest_cnt++;		// Инкремент частично восстановленных тайлов
+			_tile_positions[tile_count] = 0;
+		}
 		else
 			tile_all_rest_cnt++;		// Инкремент полностью восстановленных тайлов
 		
@@ -826,7 +831,7 @@ void jpwl_dec_init()
  * \param params  Адрес структуры с параметрами инициализации декодера jpwl
  */
 __declspec(dllexport)
-errno_t jpwl_dec_run(jpwl_dec_bParams* bParams, jpwl_dec_bResults* bResults)
+errno_t jpwl_dec_run(jpwl_dec_bParams* bParams, jpwl_dec_bResults* bResults, int* tile_positions)
 {
 	int i_res;
 	w_dec_params dec_par = {
@@ -844,6 +849,7 @@ errno_t jpwl_dec_run(jpwl_dec_bParams* bParams, jpwl_dec_bResults* bResults)
 	bad_block_length = 0;
 	tile_all_rest_cnt = 0;
 	tile_red_rest_cnt = 0;
+	_tile_positions = tile_positions;
 	i_res = w_decoder_call(&dec_par);
 	if (i_res == 1) {
 		stats.not_JPWL++;

@@ -21,6 +21,7 @@
 #include "..\add_chaos\mt19937.h"
 
 opj_cparameters_t parameters;
+int tile_positions[TILES_X * TILES_Y];
 
 errno_t read_BMP_from_file(wchar_t const* filename, uint8_t** bmp, size_t* length) {
 	FILE* in;
@@ -102,7 +103,9 @@ void test_full_cycle(wchar_t const* bmp_name, float compression, int protection,
 		.offset = 0,
 		.pData = (uint8_t*)malloc(BUFFER_SIZE)
 	};
-	if (!pack_sens || !tile_packets || !in_stream.pData || !out_stream.pData || !jpwl_stream.pData) {
+	jpwl_enc_bResults* enc_bResults = malloc(sizeof(jpwl_enc_bResults));
+	if (!pack_sens || !tile_packets || !in_stream.pData || !out_stream.pData 
+		|| !jpwl_stream.pData || !enc_bResults) {
 		wprintf(L"Memory allocation error, aborting\n");
 		return;
 	}
@@ -120,7 +123,6 @@ void test_full_cycle(wchar_t const* bmp_name, float compression, int protection,
 		wprintf(L"JPWL init failed");
 		return;
 	}
-	jpwl_enc_bResults enc_bResults;
 	jpwl_enc_params enc_params;
 	jpwl_enc_set_default_params(&enc_params);
 	enc_params.wcoder_data = protection;
@@ -158,54 +160,59 @@ void test_full_cycle(wchar_t const* bmp_name, float compression, int protection,
 
 	QueryPerformanceFrequency(&Frequency);
 	QueryPerformanceCounter(&StartingTime);
-	if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults))
+	if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, enc_bResults))
 		return;
 	QueryPerformanceCounter(&EndingTime);
 
-	wprintf(L"J2K to %.2f Mb JPWL: ", enc_bResults.wcoder_out_len / 1048576.0f);
+	wprintf(L"J2K to %.2f Mb JPWL: ", enc_bResults->wcoder_out_len / 1048576.0f);
 	print_stats(StartingTime, EndingTime, Frequency, in_stream.offset);
 
 	if (err_probability > 0) {
-		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults->wcoder_mh_len);
 		size_t packets = write_packets_with_interleave(
-			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+			jpwl_stream.pData, enc_bResults->wcoder_out_len, enc_params.wcoder_data);
 		int errors = create_packet_errors((int)packets, err_probability * .01f, 1);
 		size_t read_bytes = read_packets_with_deinterleave(
 			jpwl_stream.pData, packets, enc_params.wcoder_data);
-		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults.wcoder_mh_len);
-		enc_bResults.wcoder_out_len = (uint32_t)read_bytes;
+		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults->wcoder_mh_len);
+		enc_bResults->wcoder_out_len = (uint32_t)read_bytes;
 		wprintf(L"Tampered buffer with ~%.1f%% packet errors\n",
-			errors * 100.0f / enc_bResults.wcoder_out_len);
+			errors * 100.0f / enc_bResults->wcoder_out_len);
 	}
 
 	jpwl_dec_bParams dec_bParams = {
 		.inp_buffer = jpwl_stream.pData,
-		.inp_length = enc_bResults.wcoder_out_len,
+		.inp_length = enc_bResults->wcoder_out_len,
 		.out_buffer = in_stream.pData
 	};
-
+	memcpy(tile_positions, enc_bResults->tile_position, sizeof(tile_positions));
 	QueryPerformanceFrequency(&Frequency);
 	QueryPerformanceCounter(&StartingTime);
-	if (jpwl_dec_run(&dec_bParams, &dec_bResults))
+	if (jpwl_dec_run(&dec_bParams, &dec_bResults, tile_positions))
 		return;
 	QueryPerformanceCounter(&EndingTime);
 
 	wprintf(L"JPWL to %.2f Mb J2K: ", dec_bResults.out_length / 1048576.0f);
-	print_stats(StartingTime, EndingTime, Frequency, enc_bResults.wcoder_out_len);
+	print_stats(StartingTime, EndingTime, Frequency, enc_bResults->wcoder_out_len);
 	wprintf(L"All bad: %d, partially restored: %d, fully restored: %d\n",
 		dec_bResults.all_bad_length, dec_bResults.tile_part_rest_cnt, dec_bResults.tile_all_rest_cnt);
 	restore_stats* stats = jpwl_dec_stats();
 	wprintf(L"Corrected/uncorrected bytes: %.1f%%/%.1f%%\n",
-		stats->corrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len,
-		stats->uncorrected_rs_bytes * 100.0f / enc_bResults.wcoder_out_len);
+		stats->corrected_rs_bytes * 100.0f / enc_bResults->wcoder_out_len,
+		stats->uncorrected_rs_bytes * 100.0f / enc_bResults->wcoder_out_len);
 
 	jpwl_stream.offset = 0;
 	out_stream.offset = 0;
 	in_stream.offset = 0;
+	for (int i = 0; i < TILES_X * TILES_Y; i++) {
+		if (!tile_positions[i]) continue;
+		memcpy(in_stream.pData + tile_positions[i], enc_bResults->tile_headers[i], 
+			sizeof(enc_bResults->tile_headers[0]));
+	}
 
 	QueryPerformanceFrequency(&Frequency);
 	QueryPerformanceCounter(&StartingTime);
-	err = decode_J2K_to_BMP(&in_stream, &out_stream);
+	err = decode_J2K_to_BMP(&in_stream, &out_stream, enc_bResults->tile_position);
 	if (err) {
 		wprintf(L"Something went wrong while decoding: code %d\n", err);
 		return;
@@ -237,6 +244,7 @@ void test_full_cycle(wchar_t const* bmp_name, float compression, int protection,
 	free(in_stream.pData);
 	free(out_stream.pData);
 	free(tile_packets);
+	free(enc_bResults);
 }
 
 void test_error_recovery(wchar_t const* bmp_name, float compression, int iterations) {
@@ -276,8 +284,9 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 		.offset = 0,
 		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
 	};
+	jpwl_enc_bResults* enc_bResults = malloc(sizeof(jpwl_enc_bResults));
 	if (!pack_sens || !tile_packets || !test_data || !in_stream.pData || !out_stream.pData
-		|| !jpwl_stream.pData || !jpwl_copy_stream.pData) {
+		|| !jpwl_stream.pData || !jpwl_copy_stream.pData || !enc_bResults) {
 		wprintf(L"Memory allocation error, aborting\n");
 		return;
 	}
@@ -295,7 +304,6 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 		wprintf(L"JPWL init failed");
 		return;
 	}
-	jpwl_enc_bResults enc_bResults;
 	jpwl_enc_params enc_params;
 	jpwl_enc_set_default_params(&enc_params);
 	enc_params.wcoder_mh = 1;
@@ -326,7 +334,7 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 		jpwl_enc_init(&enc_params);
 
 		in_stream.offset = 0;
-		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, enc_bResults)) {
 			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
 			continue;
 		}
@@ -334,7 +342,7 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 		while (err_probability < 50) {
 			jpwl_dec_bParams dec_bParams = {
 				.inp_buffer = jpwl_copy_stream.pData,
-				.inp_length = enc_bResults.wcoder_out_len,
+				.inp_length = enc_bResults->wcoder_out_len,
 				.out_buffer = out_stream.pData
 			};
 			int recovered_tiles = 0;
@@ -343,14 +351,14 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 			QueryPerformanceCounter(&StartingTime);
 			for (int j = 0; j < iterations; j++) {
 				size_t packets = write_packets_with_interleave(
-					jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
+					jpwl_stream.pData, enc_bResults->wcoder_out_len, enc_params.wcoder_data);
 				errors += create_packet_errors((int)packets, err_probability * .01f, 1)
-					* 100.0f / enc_bResults.wcoder_out_len;
+					* 100.0f / enc_bResults->wcoder_out_len;
 				(void)read_packets_with_deinterleave(
 					jpwl_copy_stream.pData, packets, enc_params.wcoder_data);
 				// Restore main header - we assume that it will be intact
-				memcpy(jpwl_copy_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
-				if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
+				memcpy(jpwl_copy_stream.pData, jpwl_stream.pData, enc_bResults->wcoder_mh_len);
+				if (jpwl_dec_run(&dec_bParams, &dec_bResults, tile_positions)) {
 					wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
 					continue;
 				}
@@ -385,6 +393,7 @@ void test_error_recovery(wchar_t const* bmp_name, float compression, int iterati
 	free(out_stream.pData);
 	free(jpwl_copy_stream.pData);
 	free(tile_packets);
+	free(enc_bResults);
 	fflush(test_data);
 	fclose(test_data);
 }
@@ -421,7 +430,9 @@ void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int
 		.offset = 0,
 		.pData = (uint8_t*)malloc(BUFFER_SIZE >> 1)
 	};
-	if (!pack_sens || !tile_packets || !test_data || !jpwl_stream.pData || !in_stream.pData || !out_stream.pData)
+	jpwl_enc_bResults* enc_bResults = malloc(sizeof(jpwl_enc_bResults));
+	if (!pack_sens || !tile_packets || !test_data || !jpwl_stream.pData 
+		|| !in_stream.pData || !out_stream.pData || !enc_bResults)
 	{
 		wprintf(L"Memory allocation error, aborting\n");
 		return;
@@ -440,7 +451,6 @@ void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int
 		wprintf(L"JPWL init failed\n");
 		return;
 	}
-	jpwl_enc_bResults enc_bResults;
 	jpwl_enc_params enc_params;
 	jpwl_enc_set_default_params(&enc_params);
 	enc_params.wcoder_data = jpwl_codes[0];
@@ -472,14 +482,14 @@ void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int
 		in_stream.offset = 0;
 
 		jpwl_enc_init(&enc_params);
-		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, &enc_bResults)) {
+		if (jpwl_enc_run(in_stream.pData, jpwl_stream.pData, &enc_bParams, enc_bResults)) {
 			wprintf(L"Something went wrong while encoding to jpwl %d\n", enc_params.wcoder_data);
 			continue;
 		}
 
 		size_t packets = write_packets_with_interleave(
-			jpwl_stream.pData, enc_bResults.wcoder_out_len, enc_params.wcoder_data);
-		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults.wcoder_mh_len);
+			jpwl_stream.pData, enc_bResults->wcoder_out_len, enc_params.wcoder_data);
+		memcpy(out_stream.pData, jpwl_stream.pData, enc_bResults->wcoder_mh_len);
 
 		switch (func)
 		{
@@ -505,19 +515,19 @@ void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int
 			break;
 		}
 		int errors = create_packet_errors((int)packets, err_prob, 1);
-		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults.wcoder_mh_len);
+		memcpy(jpwl_stream.pData, out_stream.pData, enc_bResults->wcoder_mh_len);
 		(void)read_packets_with_deinterleave(jpwl_stream.pData, packets, enc_params.wcoder_data);
 
 		jpwl_dec_bParams dec_bParams = {
 			.inp_buffer = jpwl_stream.pData,
-			.inp_length = enc_bResults.wcoder_out_len,
+			.inp_length = enc_bResults->wcoder_out_len,
 			.out_buffer = out_stream.pData
 		};
-		if (jpwl_dec_run(&dec_bParams, &dec_bResults)) {
+		if (jpwl_dec_run(&dec_bParams, &dec_bResults, tile_positions)) {
 			wprintf(L"Something went wrong while decoding from jpwl %d\n", enc_params.wcoder_data);
 			continue;
 		}
-		float buffer_errors = (float)errors / enc_bResults.wcoder_out_len;
+		float buffer_errors = (float)errors / enc_bResults->wcoder_out_len;
 		float recovered_tiles = (float)dec_bResults.tile_all_rest_cnt / (TILES_X * TILES_Y);
 
 		fwprintf(test_data, L"%d\t%d\t%.1f\t%d\n", i, enc_params.wcoder_data,
@@ -535,6 +545,7 @@ void test_adaptive_algorithm(wchar_t const* bmp_name, int max_error_percent, int
 	free(in_stream.pData);
 	free(out_stream.pData);
 	free(tile_packets);
+	free(enc_bResults);
 	fflush(test_data);
 	fclose(test_data);
 }

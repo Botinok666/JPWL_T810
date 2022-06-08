@@ -1000,6 +1000,13 @@ errno_t jpwl_enc_run(uint8_t* inp_buf, uint8_t* out_buf,
 			return -1;
 		bResults->wcoder_out_len = w_params.wcoder_out_len;
 		bResults->wcoder_mh_len = w_params.wcoder_mh_len;
+		int tileNum = -1;
+		for (int i = 0; i < enc_markers_cnt; i++) {
+			if (enc_markers[i].tile_num == tileNum) continue;
+			tileNum = enc_markers[i].tile_num;
+			bResults->tile_position[tileNum] = enc_markers[i].pos_in;
+			memcpy(bResults->tile_headers[tileNum], inp_buf + enc_markers[i].pos_in, sizeof(bResults->tile_headers[0]));
+		}
 	}
 	else {
 		memcpy(out_buf, inp_buf, bParams->stream_len);

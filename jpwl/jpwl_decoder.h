@@ -15,7 +15,7 @@ __declspec(dllimport)
 #else
 extern "C" __declspec(dllimport)
 #endif
-errno_t jpwl_dec_run(jpwl_dec_bParams * bParams, jpwl_dec_bResults * bResult);
+errno_t jpwl_dec_run(jpwl_dec_bParams * bParams, jpwl_dec_bResults * bResult, int* tile_positions);
 
 #ifndef __cplusplus
 __declspec(dllimport)
