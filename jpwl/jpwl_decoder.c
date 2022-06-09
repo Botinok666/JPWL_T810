@@ -151,6 +151,11 @@ uint32_t postEPB_correct(uint8_t* epb_start, uint8_t* postdata_start, uint32_t p
 		int x = decode_RS(postdata_start, parity_start, n_p, k_p);
 		if (x < 0) {
 			badparts_count++;
+			for (int j = 0; j < k_p; j++) {
+				if (postdata_start[j] == 0xFF) {
+					postdata_start[j] = 0xFE;
+				}
+			}
 			stats.uncorrected_rs_bytes += n_p;
 		}
 		else
@@ -164,6 +169,11 @@ uint32_t postEPB_correct(uint8_t* epb_start, uint8_t* postdata_start, uint32_t p
 		int x = decode_RS(rs_data, parity_start, n_p, k_p);
 		if (x < 0) {
 			badparts_count++;
+			for (int j = 0; j < l; j++) {
+				if (postdata_start[j] == 0xFF) {
+					postdata_start[j] = 0xFE;
+				}
+			}
 			stats.uncorrected_rs_bytes += l;
 		}
 		else {
